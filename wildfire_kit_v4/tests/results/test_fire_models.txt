@@ -1,0 +1,23 @@
+test_wind
+  wind   native     east wind: centroid shift x=+14.6 y=-1.1 cells (1129 cells)   south wind: x=-0.3 y=+15.8
+  wind   pyrorl     east wind: centroid shift x=+18.3 y=+0.3 cells (1451 cells)   south wind: x=-0.3 y=+18.3
+  wind   rothermel  east wind: centroid shift x=+16.3 y=-0.5 cells (268 cells)   south wind: x=+0.5 y=+16.3
+  wind   haksar     (no wind term by design): centroid shift x=-0.4 y=+2.0
+test_slope
+  slope  native     terrain rising to east  (14 deg), weak cross-slope wind: centroid +11.5 cells uphill
+  slope  native     terrain rising to north (14 deg), weak cross-slope wind: centroid +10.5 cells uphill
+  slope  rothermel  plane rising to east , no wind: ROS uphill 9.45 vs downhill 0.00 ft/min   (SimFire as published: 0.00 vs 9.45)
+  slope  rothermel  plane rising to north, no wind: ROS uphill 9.45 vs downhill 0.00 ft/min   (SimFire as published: 0.00 vs 9.45)
+test_haksar_equivalence
+  haksar step  30: mean burnt cells fast   106.9 | original   107.2   KS p-value 0.72
+  haksar step  60: mean burnt cells fast   412.7 | original   413.6   KS p-value 0.72
+  haksar step 120: mean burnt cells fast  1283.4 | original  1272.9   KS p-value 0.82
+test_reproducible
+  same seed -> identical fire for every engine, even with other random draws in between
+test_episode
+  episode native     greedy x3, hard, 120 steps: return  10.55
+  episode pyrorl     greedy x3, hard, 120 steps: return  12.70
+  episode haksar     greedy x3, hard, 120 steps: return  12.98
+  episode rothermel  greedy x3, hard, 120 steps: return  11.41
+
+all fire-model checks passed

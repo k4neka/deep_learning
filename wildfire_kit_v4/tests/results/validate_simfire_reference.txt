@@ -1,0 +1,10 @@
+seed 0  rolling_hills    medium    cells reached by fire:   392   IDENTICAL
+seed 1  mountain_valley  hard      cells reached by fire:   990   IDENTICAL
+seed 2  lake_shore       easy      cells reached by fire:   580   IDENTICAL
+seed 3  dense_forest     extreme   cells reached by fire:  1409   IDENTICAL
+seed 4  urban_interface  medium    cells reached by fire:   671   IDENTICAL
+seed 5  farmland         hard      cells reached by fire:   437   IDENTICAL
+seed 6  mountain_valley  extreme   cells reached by fire:  1490   IDENTICAL
+seed 7  rolling_hills    easy      cells reached by fire:   169   IDENTICAL
+
+8/8 cases identical to SimFire's RothermelFireManager over 150 steps
