@@ -33,6 +33,13 @@ OBS = 32
 N_CHANNELS = 22
 BASE_RADIUS = 2                    # cells around the base where drones recharge
 
+# ---- reward v5 (explore / detect / monitor - penalties) -----------------------------------------
+REWARD_W = dict(E=2.0, D=3.0, M=1.5, FP=0.5, FN=0.5, loss=5.0, stag=0.01)
+REVISIT_T = 30                     # a cell counts as "new information" if unseen for >= T steps
+A_MIN_FRAC = 0.01                  # floor of the shared denominator Z_t (fraction of sum K_c)
+MONITOR_MIN_GAIN = 0.1             # min quality gain dQ = max(0, Q_sensor - Q^-) for a refresh to count as useful
+EPS = 1e-8
+
 
 def block_view(a, b):
     if b == 1:
@@ -96,6 +103,9 @@ class SwarmCore:
         self.belief = np.zeros((n, n), dtype=np.float32)
         self.fresh = np.zeros((n, n), dtype=np.float32)
         self.last_seen = np.full((n, n), -10 ** 6)
+        self.detected_ever = np.zeros((n, n), dtype=bool)        # fire cells already correctly detected
+        self._K = ((1 + 2 * w.home_near + (w.terrain == FOREST)) / 4.0).astype(np.float32)   # K_c
+        self._Kb = {}                                                                         # K_c block means per sensor resolution
         # Base: a road cell near the bottom edge (or bottom middle if there is no road)
         rc = np.argwhere(w.road)
         by, bx = rc[np.argmax(rc[:, 0])] if len(rc) else (n - 2, n // 2)
@@ -113,8 +123,10 @@ class SwarmCore:
         self.trails = [[tuple(p)] for p in self.pos]
         self.history = []
         self._views, self._smoke = {}, None
+        self._begin_stats()
         for i in range(self.n_drones):
             self._sense(i)
+        self._end_stats()                                      # only updates detected_ever here
         self._record()
 
     # ================================================================ helpers
@@ -164,30 +176,118 @@ class SwarmCore:
         ny = int(np.clip(self.pos[i, 1] + self.move * my, 0, self.size - 1))
         return not self.world.nofly[ny, nx]
 
+    def _kb(self, b):
+        """K_c averaged over sensor blocks of size b (broadcast back to cells)."""
+        if b not in self._Kb:
+            self._Kb[b] = block_view(self._K, b)
+        return self._Kb[b]
+
     # ================================================================ dynamics
     def _sense(self, i):
         x, y = self.pos[i]
         a = self.alt[i]
+        b = BLOCK[a]
         r = VIEW_RADIUS[a]
         y0, y1 = max(0, y - r), min(self.size, y + r + 1)
         x0, x1 = max(0, x - r), min(self.size, x + r + 1)
-        v = self._view(BLOCK[a])[y0:y1, x0:x1]
+        v = self._view(b)[y0:y1, x0:x1]
         if a == 0:
             obs = v.copy()
         elif a == 1:
             obs = np.round(v * 4) / 4                       # coarse intensity levels
         else:
             obs = np.where(v > 0.25, 0.6, 0.0)               # burning-or-not; small fires vanish
-        miss = MISS_PROB[a] + SMOKE_EFFECT[a] * self.smoke()[y0:y1, x0:x1]
-        u = self.rng.random(obs.shape)
-        obs = np.where((obs > 0) & (u < miss), 0.0, obs)
-        obs = np.where((obs == 0) & (u < FALSE_ALARM[a]), 0.5, obs).astype(np.float32)
+        clean = obs                                          # what the sensor resolves, before misses / false alarms
+        miss = MISS_PROB[a] + SMOKE_EFFECT[a] * block_view(self.smoke(), b)[y0:y1, x0:x1]
+        # two independent random fields, drawn per sensor block (one measurement per block)
+        if b == 1:
+            u_miss, u_fa = self.rng.random(obs.shape), self.rng.random(obs.shape)
+        else:
+            iy = np.unique(np.arange(y0, y1) // b, return_inverse=True)[1]
+            ix = np.unique(np.arange(x0, x1) // b, return_inverse=True)[1]
+            shp = (int(iy.max()) + 1, int(ix.max()) + 1)
+            u_miss = self.rng.random(shp)[np.ix_(iy, ix)]
+            u_fa = self.rng.random(shp)[np.ix_(iy, ix)]
+        obs = np.where((clean > 0) & (u_miss < miss), 0.0, clean)                 # missed fire
+        obs = np.where((v == 0) & (u_fa < FALSE_ALARM[a]), 0.5, obs).astype(np.float32)   # false alarm only where there is no fire
         q = QUALITY[a]
+        self._accumulate(i, a, y0, y1, x0, x1, v, clean, obs, q)
         reg = self.fresh[y0:y1, x0:x1]
         better = q >= reg
         self.belief[y0:y1, x0:x1] = np.where(better, obs, self.belief[y0:y1, x0:x1])
         self.fresh[y0:y1, x0:x1] = np.maximum(reg, q)
         self.last_seen[y0:y1, x0:x1] = self.t
+
+    # ---------------------------------------------------------------- reward bookkeeping (v5)
+    def _begin_stats(self):
+        """Snapshot the state before this step's sensing (after the freshness decay)."""
+        n = self.size
+        self._F = self.world.fire_map()
+        self._ls_prev = self.last_seen.copy()
+        self._fresh_prev = self.fresh.copy()
+        self._det_prev = self.detected_ever.copy()
+        self._st = dict(q=np.zeros((n, n), dtype=np.float32), det=np.zeros((n, n), dtype=bool),
+                        fp=0.0, nofire=0.0, fn=0.0, fire=0.0, useful=np.zeros(self.n_drones, dtype=bool))
+
+    def _accumulate(self, i, a, y0, y1, x0, x1, v, clean, obs, q):
+        """Collect one drone's look.
+
+        Group-level quantities (quality map q, detections det) are merged over drones with
+        max / OR, so nothing is rewarded twice for exploration, detection or monitoring.
+
+        FP / FN are DELIBERATELY counted per sensor measurement (one representative cell per
+        sensor block that overlaps this drone's field of view, weighted by the block-mean K_c).
+        They are NOT merged over drones: if several drones observe the same block in the same
+        step, each one's measurement is counted separately, so overlapping observations can be
+        penalised more than once. This is an intentional design decision (an error of a sensor
+        is an error of that sensor).
+
+        `v` is the (block-averaged) true fire view of the window; it is accepted so that the
+        call in _sense() matches the signature, but the statistics below use `clean` / `obs`.
+        """
+        st, t = self._st, self.t
+        win = (slice(y0, y1), slice(x0, x1))
+        st["q"][win] = np.maximum(st["q"][win], q)
+        F = self._F[win]
+        det = (obs > 0) & (F > 0)                                   # fire cell, correctly reported
+        st["det"][win] |= det
+        # useful progress of this drone (for the stagnation penalty)
+        ls, prev, fp = self._ls_prev[win], self._det_prev[win], self._fresh_prev[win]
+        new = (ls < 0) | (t - ls >= REVISIT_T)
+        dq = np.maximum(0.0, q - fp)                                # real information gain: max(0, Q_sensor - Q^-)
+        useful = new.any() or (det & ~prev).any() or (det & prev & (dq >= MONITOR_MIN_GAIN)).any()
+        st["useful"][i] |= bool(useful)
+        # false positives / negatives at the sensor's own resolution: one representative cell for
+        # every sensor block that overlaps the field of view. Blocks are aligned to the global grid
+        # (multiples of b), so a block can start outside the window; its representative is then the
+        # first cell of the block that lies inside the window (not the block's own first cell).
+        b = BLOCK[a]
+        _, ri = np.unique(np.arange(y0, y1) // b, return_index=True)    # first in-window row of each block
+        _, ci = np.unique(np.arange(x0, x1) // b, return_index=True)    # first in-window column of each block
+        sub = np.ix_(ri, ci)
+        cl, ob = clean[sub] > 0, obs[sub] > 0
+        K = self._kb(b)[win][sub]                                       # mean K_c of the whole block
+        st["fp"] += float((K * (~cl & ob)).sum())
+        st["nofire"] += float((K * ~cl).sum())
+        st["fn"] += float((K * (cl & ~ob)).sum())
+        st["fire"] += float((K * cl).sum())
+
+    def _end_stats(self):
+        """Reward components of the step (group level) and update the 'already detected' memory."""
+        st, K, F, t = self._st, self._K, self._F, self.t
+        q = st["q"]
+        new = (q > 0) & ((self._ls_prev < 0) | (t - self._ls_prev >= REVISIT_T))
+        det, prev = st["det"], self._det_prev
+        z = max(float((K * F).sum()), A_MIN_FRAC * float(K.sum()))
+        dq = np.maximum(0.0, q - self._fresh_prev)                  # real quality gain: max(0, Q_sensor - Q^-)
+        comp = dict(
+            R_E=float((K * q * new).sum() / (K.sum() + EPS)),
+            R_D=float((K * F * (det & ~prev)).sum() / (z + EPS)),
+            R_M=float((K * F * dq * (det & prev)).sum() / (z + EPS)),
+            P_FP=st["fp"] / (st["nofire"] + EPS),
+            P_FN=st["fn"] / (st["fire"] + EPS))
+        self.detected_ever |= det
+        return comp
 
     def _safety(self, i, act):
         """Battery safety layer: fly home when needed, stay until recharged."""
@@ -210,10 +310,15 @@ class SwarmCore:
     def step(self, actions):
         lost_now = 0
         w = self.world
+        p_before = self.pos.copy()
+        a_before = self.alt.copy()                                 # altitude before the action (stagnation check)
+        exempt = np.zeros(self.n_drones, dtype=bool)               # no stagnation penalty (returning / charging)
         for i, act in enumerate(actions):
             if not self.alive[i]:
                 continue
             act = self._safety(i, int(act))
+            charging = bool(self.battery_max) and self.at_base(i) and self.battery[i] < self.battery_max
+            exempt[i] = bool(self.returning[i]) or charging
             if act in MOVES and self._can_move(i, act):        # no-fly zones block the move
                 dx, dy = MOVES[act]
                 self.pos[i] = np.clip(self.pos[i] + self.move * np.array([dx, dy]), 0, self.size - 1)
@@ -226,6 +331,8 @@ class SwarmCore:
         self.t += 1
         self._views, self._smoke = {}, None
         self.fresh = np.maximum(0.0, self.fresh - 1.0 / self.age_cap)
+        self._begin_stats()
+        sensed = np.zeros(self.n_drones, dtype=bool)
         for i in range(self.n_drones):
             if not self.alive[i]:
                 continue
@@ -245,13 +352,24 @@ class SwarmCore:
                 continue
             self.alt_counts[self.alt[i]] += 1
             self._sense(i)
+            sensed[i] = True
+        comp = self._end_stats()
+        # stagnation: neither position nor altitude changed, nothing useful gained, and the drone
+        # is not returning / charging
+        stag = int(sum(1 for i in range(self.n_drones)
+                       if sensed[i] and not exempt[i] and not self._st["useful"][i]
+                       and (self.pos[i] == p_before[i]).all() and self.alt[i] == a_before[i]))
+        rw = REWARD_W
+        reward = (rw["E"] * comp["R_E"] + rw["D"] * comp["R_D"] + rw["M"] * comp["R_M"]
+                  - rw["FP"] * comp["P_FP"] - rw["FN"] * comp["P_FN"]
+                  - rw["loss"] * lost_now - rw["stag"] * stag)
         crit = self.criticality()
         penalty = float((crit * self.staleness()).sum() / (crit.sum() + 1.0))
         coverage = float((crit * self.fresh).sum() / (crit.sum() + 1.0))
-        reward = coverage - 5.0 * lost_now
         self._record()
         done = self.t >= self.max_steps or not self.alive.any()
-        return reward, done, {"penalty": penalty, "coverage": coverage, "lost": lost_now}
+        return reward, done, {"penalty": penalty, "coverage": coverage, "lost": lost_now,
+                              "stagnation": stag, **comp}
 
     def _record(self):
         if not self.record:

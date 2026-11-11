@@ -1,3 +1,17 @@
+Changed reward function in env.py
+### Modified Reward Function
+
+The reward function was redesigned to encourage drones to efficiently monitor the wildfire area and maintain up-to-date information.
+
+It consists of three main positive reward components:
+- **Exploration reward (\(R_E\)):** Rewards the discovery and revisiting of previously unexplored or outdated cells.
+- **Detection reward (\(R_D\)):** Rewards the detection of new active fire cells.
+- **Monitoring reward (\(R_M\)):** Rewards improvements in the quality of monitoring already detected fire cells.
+
+The reward function also includes penalties for false positive and false negative detections, drone losses, and unproductive actions (stagnation).
+
+The overall objective is to encourage systematic area coverage, reliable fire detection, and continuous monitoring of wildfire activity.
+
 # Wildfire swarm — v4 (fire spread from published simulators)
 
 ## What's new in v4
