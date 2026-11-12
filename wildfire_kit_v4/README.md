@@ -1,3 +1,33 @@
+## B2 — Reward Redesign and PPO Training Improvements
+
+### 1. Reward Function
+
+The reward function was redesigned to better align PPO training with the wildfire monitoring objectives.
+
+The reward consists of the following components:
+
+- **Information gain (\(R_E\), weight 2.0):** rewards the acquisition of new information, with greater emphasis on critical areas and previously unobserved regions.
+- **Fire detection (\(R_D\), weight 3.0):** rewards the correct detection of previously undetected active fire cells, weighted by their criticality.
+- **Coverage (\(R_C\), weight 1.0):** rewards the current criticality-weighted monitoring coverage.
+- **False positives (\(P_{FP}\), weight 0.5):** penalises incorrect fire detections.
+- **False negatives (\(P_{FN}\), weight 0.5):** penalises missed active fire cells.
+- **Drone loss (weight 5.0):** penalises drone loss caused by overheating.
+
+The stagnation metric is still calculated for diagnostics, but its reward weight is set to zero.
+
+### 2. Vector Normalization and PPO Training
+
+B2 introduces several improvements to PPO training and evaluation:
+
+- **Reward normalization:** Stable-Baselines3 `VecNormalize` normalizes rewards while leaving observations unchanged (`norm_obs=False`, `norm_reward=True`). Normalization is enabled by default and can be disabled using `--no-vecnorm`. The normalization statistics are saved to `vecnormalize.pkl`.
+- **Deterministic and stochastic evaluation:** PPO is evaluated using both the most probable action (`ppo`) and sampled actions (`ppo_stoch`).
+- **Configurable rollout length:** the new `--n-steps` argument controls the rollout length per environment (default: 512).
+- **CPU resource warning:** a warning is displayed when the number of parallel environments exceeds the CPU cores available to the job.
+- **Periodic model checkpoints:** the model is saved after every training chunk to preserve progress if the job reaches its time limit.
+
+------
+
+
 Changed reward function in env.py
 ### Modified Reward Function
 

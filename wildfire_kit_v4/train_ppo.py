@@ -7,6 +7,16 @@ v4: --fire-models chooses the fire engine(s) used in TRAINING (one, or a comma l
 engine per episode); after training, every policy is also tested on each engine in --test-fire-models
 ("cross_simulator" in results.json), i.e. on fire dynamics from published simulators it never saw.
 
+v5 (changes vs v4):
+  * VecNormalize on the REWARD only (observations are left untouched). On by default,
+    switch off with --no-vecnorm. Statistics are saved to <out>/vecnormalize.pkl.
+  * Evaluation is done twice: deterministic (argmax action, "ppo") and stochastic (action sampled
+    from the policy, "ppo_stoch"), both in the periodic evaluation and in the final comparison.
+  * --n-steps (default 512): rollout batch = n_envs * n_steps (aim for about 4096-8192).
+  * Warning if --n-envs is larger than the number of CPU cores available to the job.
+  * The model is saved after every evaluation chunk, so a job that hits its time limit
+    still leaves the latest model behind.
+
 Usage:
     python train_ppo.py --steps 50000 --n-envs 8 --subproc --out runs/smoke      # quick test
     python train_ppo.py --steps 3000000 --n-envs 32 --subproc --out runs/ppo     # real run (VSC)
@@ -18,11 +28,13 @@ import torch
 import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from env import SingleDroneEnv
 from baselines import evaluate, Lawnmower, Greedy, RandomPolicy
+
+GAMMA = 0.98   # used by PPO and by VecNormalize (must be the same value)
 
 
 class SmallCNN(BaseFeaturesExtractor):
@@ -46,16 +58,21 @@ class SmallCNN(BaseFeaturesExtractor):
 
 
 class PPOPolicyWrapper:
-    """Lets a trained model control any number of drones (shared weights)."""
+    """Lets a trained model control any number of drones (shared weights).
 
-    def __init__(self, model):
+    deterministic=True  -> always the most likely action (argmax)
+    deterministic=False -> action sampled from the policy distribution (as during training)
+    """
+
+    def __init__(self, model, deterministic=True):
         self.model = model
+        self.deterministic = deterministic
 
     def reset(self, core):
         pass
 
     def act(self, core, i):
-        a, _ = self.model.predict(core.observe(i), deterministic=True)
+        a, _ = self.model.predict(core.observe(i), deterministic=self.deterministic)
         return int(a)
 
 
@@ -63,9 +80,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=300_000)
     ap.add_argument("--n-envs", type=int, default=8)
+    ap.add_argument("--n-steps", type=int, default=512,
+                    help="PPO rollout length per env; rollout batch = n_envs * n_steps")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/ppo")
     ap.add_argument("--subproc", action="store_true")
+    ap.add_argument("--vecnorm", action=argparse.BooleanOptionalAction, default=True,
+                    help="normalise the reward (NOT the observations) with VecNormalize; --no-vecnorm to disable")
     ap.add_argument("--start-alt", type=int, default=1, help="0 low, 1 medium, 2 high")
     ap.add_argument("--size", type=int, default=128, help="map size in cells (multiple of 32)")
     ap.add_argument("--device", default="cpu", help="cpu or cuda")
@@ -88,21 +109,32 @@ def main():
     print(f"cores available: {cores}, device: {args.device}", flush=True)
     print(f"training maps: {args.maps} | held-out maps: {args.test_maps} | difficulty: {args.difficulty} | "
           f"fire models: {args.fire_models}", flush=True)
+    print(f"envs: {args.n_envs} | rollout batch: {args.n_envs} x {args.n_steps} = {args.n_envs * args.n_steps} | "
+          f"reward normalisation (VecNormalize): {args.vecnorm}", flush=True)
+    if args.n_envs > cores:
+        print(f"WARNING: --n-envs {args.n_envs} is larger than the {cores} cores available; "
+              f"the simulators will compete for CPU time", flush=True)
 
     # --subproc runs each environment copy in its own process (use it when you have several CPU cores)
+    # make_vec_env gives every environment its own seed (seed + index)
     vec_cls = SubprocVecEnv if args.subproc else DummyVecEnv
     env = make_vec_env(SingleDroneEnv, n_envs=args.n_envs, seed=args.seed, vec_env_cls=vec_cls,
                        env_kwargs=dict(start_alt=args.start_alt, size=args.size,
                                        map_types=args.maps, difficulty=args.difficulty,
                                        fire_models=args.fire_models))
+    if args.vecnorm:
+        # reward only: observations are images for the CNN and must stay as they are,
+        # so evaluate() (which has its own, un-normalised environments) stays comparable.
+        env = VecNormalize(env, norm_obs=False, norm_reward=True, gamma=GAMMA)
     model = PPO(
         "CnnPolicy", env, seed=args.seed, verbose=0, device=args.device,
-        n_steps=512, batch_size=1024, n_epochs=4, gamma=0.98, learning_rate=3e-4, ent_coef=0.02,
+        n_steps=args.n_steps, batch_size=1024, n_epochs=4, gamma=GAMMA, learning_rate=3e-4, ent_coef=0.02,
         policy_kwargs=dict(features_extractor_class=SmallCNN,
                            features_extractor_kwargs=dict(features_dim=128),
                            normalize_images=False),
     )
     common = dict(start_alt=args.start_alt, size=args.size)
+    model_path = os.path.join(args.out, "model")
     t0 = time.time()
     log = []
     chunk = max(args.steps // 6, 2048)
@@ -110,15 +142,27 @@ def main():
     while done_steps < args.steps:
         model.learn(chunk, reset_num_timesteps=False)
         done_steps = model.num_timesteps
-        m = evaluate(PPOPolicyWrapper(model), n_drones=1, seeds=range(2000, 2005),
-                     map_types=args.maps, difficulty=args.test_difficulty, fire_models=args.fire_models, **common)
-        m.update(steps=done_steps, minutes=round((time.time() - t0) / 60, 1))
+        model.save(model_path)          # checkpoint: survives a job that runs out of time
+        eval_kw = dict(n_drones=1, seeds=range(2000, 2005), map_types=args.maps,
+                       difficulty=args.test_difficulty, fire_models=args.fire_models, **common)
+        m = evaluate(PPOPolicyWrapper(model, deterministic=True), **eval_kw)
+        ms = evaluate(PPOPolicyWrapper(model, deterministic=False), **eval_kw)
+        m.update(steps=done_steps, minutes=round((time.time() - t0) / 60, 1),
+                 return_stoch=ms["return"], staleness_stoch=ms["staleness"])
         log.append(m)
         print(f"[{m['minutes']:5.1f} min] {done_steps:8d} steps  score={m['return']:6.2f}  "
+              f"score_stoch={ms['return']:6.2f}  "
               f"staleness={m['staleness']:.3f}  lost heat/battery={m['lost_heat_per_ep']:.2f}/"
               f"{m['lost_battery_per_ep']:.2f}  alt={m['alt_share']}", flush=True)
-    model.save(os.path.join(args.out, "model"))
+    model.save(model_path)
+    if args.vecnorm:
+        env.save(os.path.join(args.out, "vecnormalize.pkl"))
     fps = model.num_timesteps / (time.time() - t0)
+
+    # PPO policies evaluated both ways: deterministic (argmax) and stochastic (sampled)
+    def ppo_policies():
+        return [("ppo", PPOPolicyWrapper(model, deterministic=True)),
+                ("ppo_stoch", PPOPolicyWrapper(model, deterministic=False))]
 
     # Final comparison on fresh seeds: training map types AND map types never seen in training
     seeds = range(5000, 5000 + args.eval_episodes)
@@ -126,7 +170,7 @@ def main():
     for split, maps in [("train_maps", args.maps), ("unseen_maps", args.test_maps)]:
         results[split] = {}
         for name, pol in [("random", RandomPolicy()), ("lawnmower", Lawnmower()),
-                          ("greedy", Greedy()), ("ppo", PPOPolicyWrapper(model))]:
+                          ("greedy", Greedy())] + ppo_policies():
             results[split][name] = evaluate(pol, n_drones=1, seeds=seeds, map_types=maps,
                                             difficulty=args.test_difficulty, fire_models=args.fire_models,
                                             **common)
@@ -142,7 +186,7 @@ def main():
     for fm in args.test_fire_models.split(","):
         cross[fm] = {}
         for name, pol in [("random", RandomPolicy()), ("lawnmower", Lawnmower()),
-                          ("greedy", Greedy()), ("ppo", PPOPolicyWrapper(model))]:
+                          ("greedy", Greedy())] + ppo_policies():
             cross[fm][name] = evaluate(pol, n_drones=1, seeds=seeds, map_types="all",
                                        difficulty=args.test_difficulty, fire_models=fm, **common)
     out = {"train_fps": round(fps), "train_minutes": round((time.time() - t0) / 60, 1),
@@ -154,10 +198,11 @@ def main():
         for name, m in res.items():
             print(f"  {name:15s} score {m['return']:7.2f}  staleness {m['staleness']:.3f}  "
                   f"lost heat/battery {m['lost_heat_per_ep']:.2f}/{m['lost_battery_per_ep']:.2f}")
+    cols = ["random", "lawnmower", "greedy", "ppo", "ppo_stoch"]
     print(f"\ncross-simulator test (all map types, {args.test_difficulty}; trained on fire: {args.fire_models}):")
-    print(f"  {'fire model':12s} " + " ".join(f"{n:>10s}" for n in ["random", "lawnmower", "greedy", "ppo"]))
+    print(f"  {'fire model':12s} " + " ".join(f"{n:>10s}" for n in cols))
     for fm, res in cross.items():
-        print(f"  {fm:12s} " + " ".join(f"{res[n]['return']:10.2f}" for n in ["random", "lawnmower", "greedy", "ppo"]))
+        print(f"  {fm:12s} " + " ".join(f"{res[n]['return']:10.2f}" for n in cols))
     print("train fps:", round(fps))
 
 

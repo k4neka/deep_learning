@@ -1,13 +1,35 @@
+import io
+import sys
 import numpy as np
 import torch
 from stable_baselines3 import PPO
 from env import SingleDroneEnv
+import train_ppo  # noqa: F401  (needed so the custom SmallCNN can be loaded with the model)
 
-MODEL = "runs/test_B_full/model.zip"
+# torch 2.15 can't read straight from a zip stream (which stable-baselines3 passes it);
+# read the stream into memory first.
+_orig_load = torch.load
+
+
+def _load(f, *a, **k):
+    if hasattr(f, "read") and not isinstance(f, io.BytesIO):
+        f = io.BytesIO(f.read())
+    return _orig_load(f, *a, **k)
+
+
+torch.load = _load
+
+# usage: python diag_ppo.py runs\1M_B1_test\model.zip
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "runs/1M_B1_test/model.zip"
 SEEDS = range(1000, 1010)          # 10 epizod
 NAMES = ["N", "S", "E", "W", "UP", "DOWN", "HOVER"]
 
-model = PPO.load(MODEL, device="cpu")
+# The model file contains a by-value copy of SmallCNN made by the cluster's Python (3.13);
+# bytecode from another Python version crashes here. Use the local class instead.
+model = PPO.load(MODEL, device="cpu", custom_objects=dict(
+    policy_kwargs=dict(features_extractor_class=train_ppo.SmallCNN,
+                       features_extractor_kwargs=dict(features_dim=128),
+                       normalize_images=False)))
 
 
 def run(deterministic):
