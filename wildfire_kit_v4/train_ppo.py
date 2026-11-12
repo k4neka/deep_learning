@@ -90,6 +90,8 @@ def main():
                     help="PPO rollout length per env; rollout batch = n_envs * n_steps")
     ap.add_argument("--ent-coef", type=float, default=0.02,
                     help="PPO entropy bonus weight (0.02 = value used in B1 and B2)")
+    ap.add_argument("--re-weight", type=float, default=2.0,
+                    help="reward weight of R_E (exploration) in TRAINING only; 2.0 = v6 default (B1-B3)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/ppo")
     ap.add_argument("--subproc", action="store_true")
@@ -118,7 +120,7 @@ def main():
     print(f"training maps: {args.maps} | held-out maps: {args.test_maps} | difficulty: {args.difficulty} | "
           f"fire models: {args.fire_models}", flush=True)
     print(f"envs: {args.n_envs} | rollout batch: {args.n_envs} x {args.n_steps} = {args.n_envs * args.n_steps} | "
-          f"reward normalisation (VecNormalize): {args.vecnorm} | ent_coef: {args.ent_coef}", flush=True)
+          f"reward normalisation (VecNormalize): {args.vecnorm} | ent_coef: {args.ent_coef} | re_weight: {args.re_weight}", flush=True)
     if args.n_envs > cores:
         print(f"WARNING: --n-envs {args.n_envs} is larger than the {cores} cores available; "
               f"the simulators will compete for CPU time", flush=True)
@@ -129,7 +131,8 @@ def main():
     env = make_vec_env(SingleDroneEnv, n_envs=args.n_envs, seed=args.seed, vec_env_cls=vec_cls,
                        env_kwargs=dict(start_alt=args.start_alt, size=args.size,
                                        map_types=args.maps, difficulty=args.difficulty,
-                                       fire_models=args.fire_models))
+                                       fire_models=args.fire_models,
+                                       reward_w=dict(E=args.re_weight)))
     if args.vecnorm:
         # reward only: observations are images for the CNN and must stay as they are,
         # so evaluate() (which has its own, un-normalised environments) stays comparable.

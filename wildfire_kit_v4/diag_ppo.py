@@ -28,7 +28,7 @@ ap.add_argument("--maps", default="rolling_hills,mountain_valley,dense_forest,fa
 ap.add_argument("--episodes", type=int, default=20)
 ap.add_argument("--seed0", type=int, default=5000)
 ap.add_argument("--difficulty", default="medium")
-ap.add_argument("--csv", default="diag_episodes_B3.csv")
+ap.add_argument("--csv", default="diag_episodes_B4.csv")
 args = ap.parse_args()
 
 # SmallCNN is saved by value from the cluster's Python (3.13); use the local class instead.

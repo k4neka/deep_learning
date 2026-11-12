@@ -1,3 +1,37 @@
+## B4 — Increased Exploration Reward
+
+### 1. Changes Compared to B3
+
+B4 investigates whether providing a stronger exploration reward can improve the drone's ability to search for and detect fires.
+
+The main change was increasing the exploration reward weight (\(R_E\)) from 2.0 to 20.0 during PPO training. All other main training parameters and the reward function remained unchanged from B3.
+
+The experiment was designed to encourage more effective exploration and address the weak search behaviour observed in previous experiments.
+
+### 2. Results and Observations
+
+B4 showed a clear improvement over B3, particularly in the deterministic PPO policy.
+
+The deterministic policy achieved a higher episode return, detected more fires and reduced detection latency. The stochastic policy also improved in several metrics, although its improvement was less pronounced.
+
+Excessive hovering remained eliminated, while drone losses did not increase substantially. The policy also showed lower entropy, indicating more focused action selection.
+
+Despite these improvements, PPO still did not consistently outperform the lawnmower and greedy baselines. In particular, fire detection remained challenging on the unseen urban interface map. The greedy baseline also maintained a higher overall return.
+
+### 3. Conclusion and Future Work
+
+Increasing the exploration reward produced a meaningful improvement in PPO performance, especially for the deterministic policy. The results support the hypothesis that a stronger exploration signal can improve fire detection, although the experiment used only one training seed, so the improvement still requires further confirmation.
+
+An important remaining question is whether the improved performance comes from better map coverage or genuinely more effective fire searching and monitoring.
+
+**Next steps:**
+- Repeat B4 with additional random seeds to verify whether the improvement is consistent.
+- Investigate the contribution of the exploration reward separately from fire detection and monitoring performance.
+- Explore reward designs that encourage searching for fire rather than simply covering important map regions.
+- Investigate the weaker performance on unseen maps, particularly urban interface environments.
+- Further improve fire tracking after the initial detection, where PPO still performs below the greedy baseline.
+
+
 ## B3 — PPO Entropy and Training Duration Experiment
 
 B3 investigates whether reducing PPO's exploration entropy and training duration improves the learned drone monitoring policy.

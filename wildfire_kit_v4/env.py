@@ -75,11 +75,12 @@ def _as_list(x, allowed):
 class SwarmCore:
     def __init__(self, size=128, n_drones=1, max_steps=300, age_cap=60, seed=None, start_alt=1,
                  move_cells=2, record=False, map_types="random", difficulty="medium", safety_return=True,
-                 fire_models="native"):
+                 fire_models="native", reward_w=None):
         assert size % OBS == 0, "size must be a multiple of 32"
         self.size, self.n_drones, self.max_steps = size, n_drones, max_steps
         self.age_cap, self.start_alt, self.move = age_cap, start_alt, move_cells
         self.record, self.safety_return = record, safety_return
+        self.reward_w = {**REWARD_W, **(reward_w or {})}      # per-instance weights; default = v6
         self.map_types = _as_list(map_types, MAP_TYPES)
         self.difficulties = _as_list(difficulty, list(DIFFICULTY))
         self.fire_models = _as_list(fire_models, FIRE_MODELS)
@@ -366,7 +367,7 @@ class SwarmCore:
         stag = int(sum(1 for i in range(self.n_drones)
                        if sensed[i] and not exempt[i] and not self._st["useful"][i]
                        and (self.pos[i] == p_before[i]).all() and self.alt[i] == a_before[i]))
-        rw = REWARD_W
+        rw = self.reward_w
         reward = (rw["E"] * comp["R_E"] + rw["D"] * comp["R_D"] + rw["C"] * comp["R_C"]
                   - rw["FP"] * comp["P_FP"] - rw["FN"] * comp["P_FN"]
                   - rw["loss"] * lost_now - rw["stag"] * stag)
@@ -458,10 +459,10 @@ class SingleDroneEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, size=128, max_steps=300, seed=None, start_alt=1, map_types="random",
-                 difficulty="medium", safety_return=True, fire_models="native"):
+                 difficulty="medium", safety_return=True, fire_models="native", reward_w=None):
         self.core = SwarmCore(size=size, n_drones=1, max_steps=max_steps, seed=seed, start_alt=start_alt,
                               map_types=map_types, difficulty=difficulty, safety_return=safety_return,
-                              fire_models=fire_models)
+                              fire_models=fire_models, reward_w=reward_w)
         self.observation_space = spaces.Box(-2.0, 2.0, shape=(N_CHANNELS, OBS, OBS), dtype=np.float32)
         self.action_space = spaces.Discrete(7)
 
