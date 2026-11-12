@@ -1,3 +1,51 @@
+## B3 — PPO Entropy and Training Duration Experiment
+
+B3 investigates whether reducing PPO's exploration entropy and training duration improves the learned drone monitoring policy.
+
+### 1. Changes Compared to B2
+
+B3 retains the B2 reward function, reward normalization and observation design. Two PPO training parameters were changed:
+
+- **Entropy coefficient:** reduced from `0.02` to `0.005` to encourage the policy to move away from nearly uniform action selection.
+- **Training duration:** reduced from 1,000,000 to 500,000 requested timesteps.
+
+All other main training settings were kept unchanged, including the random seed (`42`), 16 parallel environments, Rothermel fire model, rollout length (`512`), batch size (`1024`), learning rate (`3e-4`) and discount factor (`0.98`).
+
+The actual number of training timesteps was 540,672 due to PPO rollout batch alignment.
+
+### 2. Evaluation and Diagnostics
+
+B3 was evaluated using both deterministic and stochastic PPO policies.
+
+The diagnostic evaluation covered six map types (four training maps and two unseen maps), with 20 episodes per map and difficulty set to medium. The same evaluation seeds (5000–5019) and simulation settings were used for B2 and B3 to enable a direct comparison.
+
+The evaluation included:
+- Episode return and its decomposition into pre-detection and post-detection reward.
+- Fire detection rate and detection latency.
+- Censored detection latency, assigning 300 steps to episodes in which the fire was not detected.
+- Drone losses and hover-action frequency.
+- Policy entropy and correlation between return and detection latency.
+
+### 3. Results and Observations
+
+The comparison between B2 and B3 did not reveal a statistically significant improvement in the main performance metrics.
+
+The most notable behavioral change was the disappearance of excessive hovering in the deterministic policy: its hover frequency decreased from approximately 76–84% in B2 to 0% in B3. However, this did not translate into a meaningful improvement in fire detection or episode return.
+
+The stochastic B3 policy performed significantly better than the random baseline in episode return, detection rate and censored detection latency. Nevertheless, it did not significantly outperform the stochastic B2 policy.
+
+Both PPO policies remained substantially behind the lawnmower and greedy baselines. The lawnmower detected fires in all 120 diagnostic episodes, while the PPO policies achieved lower detection rates.
+
+### 4. Conclusion
+
+Reducing the entropy coefficient and training duration changed the deterministic policy's behavior but did not produce a statistically significant improvement over B2.
+
+The results suggest that excessive policy entropy alone is unlikely to explain the poor PPO performance. A weak learning signal for exploration before the first fire detection remains a plausible limitation.
+
+**Next step:** B4 will investigate whether strengthening the reward signal for exploration before the first fire detection can improve detection rate and reduce censored detection latency.
+
+
+
 ## B2 — Reward Redesign and PPO Training Improvements
 
 ### 1. Reward Function

@@ -17,10 +17,16 @@ v5 (changes vs v4):
   * The model is saved after every evaluation chunk, so a job that hits its time limit
     still leaves the latest model behind.
 
+v6 (changes vs v5):
+  * --ent-coef (default 0.02 = the value used in B1 and B2): PPO entropy bonus weight.
+  * PPO verbose=1: SB3 prints its training table (train/entropy_loss, explained_variance, ...) in the log.
+    This only changes the printout, not the training.
+
 Usage:
     python train_ppo.py --steps 50000 --n-envs 8 --subproc --out runs/smoke      # quick test
     python train_ppo.py --steps 3000000 --n-envs 32 --subproc --out runs/ppo     # real run (VSC)
     python train_ppo.py ... --fire-models native,pyrorl,haksar,rothermel         # train on all engines
+    python train_ppo.py ... --ent-coef 0.005                                     # lower entropy bonus
 """
 import argparse, json, os, time
 import numpy as np
@@ -82,6 +88,8 @@ def main():
     ap.add_argument("--n-envs", type=int, default=8)
     ap.add_argument("--n-steps", type=int, default=512,
                     help="PPO rollout length per env; rollout batch = n_envs * n_steps")
+    ap.add_argument("--ent-coef", type=float, default=0.02,
+                    help="PPO entropy bonus weight (0.02 = value used in B1 and B2)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/ppo")
     ap.add_argument("--subproc", action="store_true")
@@ -110,7 +118,7 @@ def main():
     print(f"training maps: {args.maps} | held-out maps: {args.test_maps} | difficulty: {args.difficulty} | "
           f"fire models: {args.fire_models}", flush=True)
     print(f"envs: {args.n_envs} | rollout batch: {args.n_envs} x {args.n_steps} = {args.n_envs * args.n_steps} | "
-          f"reward normalisation (VecNormalize): {args.vecnorm}", flush=True)
+          f"reward normalisation (VecNormalize): {args.vecnorm} | ent_coef: {args.ent_coef}", flush=True)
     if args.n_envs > cores:
         print(f"WARNING: --n-envs {args.n_envs} is larger than the {cores} cores available; "
               f"the simulators will compete for CPU time", flush=True)
@@ -127,8 +135,9 @@ def main():
         # so evaluate() (which has its own, un-normalised environments) stays comparable.
         env = VecNormalize(env, norm_obs=False, norm_reward=True, gamma=GAMMA)
     model = PPO(
-        "CnnPolicy", env, seed=args.seed, verbose=0, device=args.device,
-        n_steps=args.n_steps, batch_size=1024, n_epochs=4, gamma=GAMMA, learning_rate=3e-4, ent_coef=0.02,
+        "CnnPolicy", env, seed=args.seed, verbose=1, device=args.device,
+        n_steps=args.n_steps, batch_size=1024, n_epochs=4, gamma=GAMMA, learning_rate=3e-4,
+        ent_coef=args.ent_coef,
         policy_kwargs=dict(features_extractor_class=SmallCNN,
                            features_extractor_kwargs=dict(features_dim=128),
                            normalize_images=False),
