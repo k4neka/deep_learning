@@ -12,6 +12,12 @@ New in v3:
 New in v4:
   - fire_models: which fire-spread engine(s) to use ("native", "pyrorl", "haksar", "rothermel", a
     comma list or "all"); with several, each episode draws one (domain randomisation across simulators)
+New in v6 (reward):
+  - R_C: per-step coverage LEVEL  sum(crit*fresh) / (sum(crit)+1)  -- the same quantity the
+    evaluation reports (staleness ~ 1 - coverage); replaces the flow-type R_M
+  - R_E: real information gain  max(0, Q_sensor - fresh_prev), discounted by (1 - coverage)
+  - P_FP / P_FN normalised by map K-mass / fire mass, so all terms share one scale
+  - stagnation penalty switched off (weight 0, still counted as a diagnostic)
 """
 import numpy as np
 import gymnasium as gym
@@ -33,11 +39,13 @@ OBS = 32
 N_CHANNELS = 22
 BASE_RADIUS = 2                    # cells around the base where drones recharge
 
-# ---- reward v5 (explore / detect / monitor - penalties) -----------------------------------------
-REWARD_W = dict(E=2.0, D=3.0, M=1.5, FP=0.5, FN=0.5, loss=5.0, stag=0.01)
-REVISIT_T = 30                     # a cell counts as "new information" if unseen for >= T steps
+# ---- reward v6 (coverage level / explore / detect - penalties) ----------------------------------
+# All positive terms and both error terms are fractions in [0, 1] of their own natural mass
+# (map K-mass or fire mass), so they live on one scale. C = 1 because R_C is the evaluation metric.
+REWARD_W = dict(E=2.0, D=3.0, C=1.0, FP=0.5, FN=0.5, loss=5.0, stag=0.0)
+REVISIT_T = 30                     # no longer used by the reward (kept so old imports do not break)
 A_MIN_FRAC = 0.01                  # floor of the shared denominator Z_t (fraction of sum K_c)
-MONITOR_MIN_GAIN = 0.1             # min quality gain dQ = max(0, Q_sensor - Q^-) for a refresh to count as useful
+MONITOR_MIN_GAIN = 0.1             # min quality gain dQ = max(0, Q_sensor - Q^-) that counts as useful progress
 EPS = 1e-8
 
 
@@ -218,7 +226,7 @@ class SwarmCore:
         self.fresh[y0:y1, x0:x1] = np.maximum(reg, q)
         self.last_seen[y0:y1, x0:x1] = self.t
 
-    # ---------------------------------------------------------------- reward bookkeeping (v5)
+    # ---------------------------------------------------------------- reward bookkeeping (v6)
     def _begin_stats(self):
         """Snapshot the state before this step's sensing (after the freshness decay)."""
         n = self.size
@@ -227,36 +235,35 @@ class SwarmCore:
         self._fresh_prev = self.fresh.copy()
         self._det_prev = self.detected_ever.copy()
         self._st = dict(q=np.zeros((n, n), dtype=np.float32), det=np.zeros((n, n), dtype=bool),
-                        fp=0.0, nofire=0.0, fn=0.0, fire=0.0, useful=np.zeros(self.n_drones, dtype=bool))
+                        fp=0.0, fn=0.0, useful=np.zeros(self.n_drones, dtype=bool))
 
     def _accumulate(self, i, a, y0, y1, x0, x1, v, clean, obs, q):
         """Collect one drone's look.
 
         Group-level quantities (quality map q, detections det) are merged over drones with
-        max / OR, so nothing is rewarded twice for exploration, detection or monitoring.
+        max / OR, so nothing is rewarded twice for exploration, detection or coverage.
 
-        FP / FN are DELIBERATELY counted per sensor measurement (one representative cell per
-        sensor block that overlaps this drone's field of view, weighted by the block-mean K_c).
-        They are NOT merged over drones: if several drones observe the same block in the same
-        step, each one's measurement is counted separately, so overlapping observations can be
-        penalised more than once. This is an intentional design decision (an error of a sensor
-        is an error of that sensor).
+        FP / FN are DELIBERATELY counted per sensor measurement: one representative cell for
+        every sensor block that overlaps this drone's field of view, weighted by the block-mean
+        K_c times the block area b*b (so the mass is comparable to the map K-mass / fire mass
+        they are later divided by). They are NOT merged over drones: if several drones observe
+        the same block in the same step, each drone's measurement is counted separately, so
+        overlapping observations can be penalised more than once. This is an intentional design
+        decision (an error of a sensor is an error of that sensor).
 
-        `v` is the (block-averaged) true fire view of the window; it is accepted so that the
-        call in _sense() matches the signature, but the statistics below use `clean` / `obs`.
+        `v` (block-averaged true fire view of the window) is accepted so the call in _sense()
+        matches this signature; the statistics below use `clean` / `obs`.
         """
-        st, t = self._st, self.t
+        st = self._st
         win = (slice(y0, y1), slice(x0, x1))
         st["q"][win] = np.maximum(st["q"][win], q)
         F = self._F[win]
         det = (obs > 0) & (F > 0)                                   # fire cell, correctly reported
         st["det"][win] |= det
-        # useful progress of this drone (for the stagnation penalty)
-        ls, prev, fp = self._ls_prev[win], self._det_prev[win], self._fresh_prev[win]
-        new = (ls < 0) | (t - ls >= REVISIT_T)
-        dq = np.maximum(0.0, q - fp)                                # real information gain: max(0, Q_sensor - Q^-)
-        useful = new.any() or (det & ~prev).any() or (det & prev & (dq >= MONITOR_MIN_GAIN)).any()
-        st["useful"][i] |= bool(useful)
+        # useful progress of this drone (diagnostic for the stagnation counter):
+        # a real information gain dQ = max(0, Q_sensor - Q^-), or fire correctly in view
+        dq = np.maximum(0.0, q - self._fresh_prev[win])
+        st["useful"][i] |= bool(det.any() or (dq >= MONITOR_MIN_GAIN).any())
         # false positives / negatives at the sensor's own resolution: one representative cell for
         # every sensor block that overlaps the field of view. Blocks are aligned to the global grid
         # (multiples of b), so a block can start outside the window; its representative is then the
@@ -266,26 +273,26 @@ class SwarmCore:
         _, ci = np.unique(np.arange(x0, x1) // b, return_index=True)    # first in-window column of each block
         sub = np.ix_(ri, ci)
         cl, ob = clean[sub] > 0, obs[sub] > 0
-        K = self._kb(b)[win][sub]                                       # mean K_c of the whole block
-        st["fp"] += float((K * (~cl & ob)).sum())
-        st["nofire"] += float((K * ~cl).sum())
-        st["fn"] += float((K * (cl & ~ob)).sum())
-        st["fire"] += float((K * cl).sum())
+        mass = self._kb(b)[win][sub] * (b * b)                          # mean K of the whole block * block area
+        st["fp"] += float((mass * (~cl & ob)).sum())                    # reported fire where the sensor resolves none
+        st["fn"] += float((mass * (cl & ~ob)).sum())                    # resolved fire that was missed
 
     def _end_stats(self):
         """Reward components of the step (group level) and update the 'already detected' memory."""
-        st, K, F, t = self._st, self._K, self._F, self.t
+        st, K, F = self._st, self._K, self._F
         q = st["q"]
-        new = (q > 0) & ((self._ls_prev < 0) | (t - self._ls_prev >= REVISIT_T))
         det, prev = st["det"], self._det_prev
-        z = max(float((K * F).sum()), A_MIN_FRAC * float(K.sum()))
+        k_sum = float(K.sum())
+        z = max(float((K * F).sum()), A_MIN_FRAC * k_sum)
         dq = np.maximum(0.0, q - self._fresh_prev)                  # real quality gain: max(0, Q_sensor - Q^-)
+        crit = self.criticality()
+        cov = float((crit * self.fresh).sum() / (crit.sum() + 1.0))  # evaluation metric (staleness ~ 1 - cov)
         comp = dict(
-            R_E=float((K * q * new).sum() / (K.sum() + EPS)),
+            R_E=float((K * dq).sum() / (k_sum + EPS)) * (1.0 - cov),   # exploring matters less once fire is covered
             R_D=float((K * F * (det & ~prev)).sum() / (z + EPS)),
-            R_M=float((K * F * dq * (det & prev)).sum() / (z + EPS)),
-            P_FP=st["fp"] / (st["nofire"] + EPS),
-            P_FN=st["fn"] / (st["fire"] + EPS))
+            R_C=cov,
+            P_FP=st["fp"] / (k_sum + EPS),
+            P_FN=st["fn"] / (z + EPS))
         self.detected_ever |= det
         return comp
 
@@ -312,7 +319,7 @@ class SwarmCore:
         w = self.world
         p_before = self.pos.copy()
         a_before = self.alt.copy()                                 # altitude before the action (stagnation check)
-        exempt = np.zeros(self.n_drones, dtype=bool)               # no stagnation penalty (returning / charging)
+        exempt = np.zeros(self.n_drones, dtype=bool)               # no stagnation count (returning / charging)
         for i, act in enumerate(actions):
             if not self.alive[i]:
                 continue
@@ -354,18 +361,18 @@ class SwarmCore:
             self._sense(i)
             sensed[i] = True
         comp = self._end_stats()
-        # stagnation: neither position nor altitude changed, nothing useful gained, and the drone
-        # is not returning / charging
+        # stagnation (diagnostic; weight 0 in v6): neither position nor altitude changed, nothing
+        # useful gained, and the drone is not returning / charging
         stag = int(sum(1 for i in range(self.n_drones)
                        if sensed[i] and not exempt[i] and not self._st["useful"][i]
                        and (self.pos[i] == p_before[i]).all() and self.alt[i] == a_before[i]))
         rw = REWARD_W
-        reward = (rw["E"] * comp["R_E"] + rw["D"] * comp["R_D"] + rw["M"] * comp["R_M"]
+        reward = (rw["E"] * comp["R_E"] + rw["D"] * comp["R_D"] + rw["C"] * comp["R_C"]
                   - rw["FP"] * comp["P_FP"] - rw["FN"] * comp["P_FN"]
                   - rw["loss"] * lost_now - rw["stag"] * stag)
         crit = self.criticality()
         penalty = float((crit * self.staleness()).sum() / (crit.sum() + 1.0))
-        coverage = float((crit * self.fresh).sum() / (crit.sum() + 1.0))
+        coverage = comp["R_C"]
         self._record()
         done = self.t >= self.max_steps or not self.alive.any()
         return reward, done, {"penalty": penalty, "coverage": coverage, "lost": lost_now,
