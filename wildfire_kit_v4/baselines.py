@@ -80,31 +80,45 @@ class Greedy:
 
 def evaluate(policy, n_drones=1, seeds=range(1000, 1030), size=128, max_steps=300, start_alt=1,
              map_types="random", difficulty="medium", safety_return=True, fire_models="native"):
-    """Each seed gets a map type, difficulty and fire engine drawn from the given lists. Returns a metric dict."""
+    """Each seed gets a map type, difficulty and fire engine drawn from the given lists. Returns a metric dict.
+
+    Main metric: "staleness" = criticality-weighted staleness of the team map, averaged over the
+    mission (lower is better). "staleness_eps" keeps one value per seed, in seed order, so two
+    policies evaluated on the same seeds can be compared mission by mission (paired comparison).
+    """
     core = SwarmCore(size=size, n_drones=n_drones, max_steps=max_steps, start_alt=start_alt,
                      map_types=map_types, difficulty=difficulty, safety_return=safety_return,
                      fire_models=fire_models)
-    rets, pens, lost, alt = [], [], {"heat": 0, "battery": 0}, np.zeros(3)
+    rets, pens, covs, lost, alt = [], [], [], {"heat": 0, "battery": 0}, np.zeros(3)
+    seeds = list(seeds)
     for s in seeds:
         core.reset(seed=s)
         policy.reset(core)
-        ret, p_sum, done = 0.0, 0.0, False
+        ret, p_sum, c_sum, done = 0.0, 0.0, 0.0, False
         while not done:
             r, done, info = core.step([policy.act(core, i) for i in range(n_drones)])
             ret += r
             p_sum += info["penalty"]
+            c_sum += info["coverage"]
         rets.append(ret)
         pens.append(p_sum / core.t)
+        covs.append(c_sum / core.t)
         for why in core.lost_reason:
             if why:
                 lost[why] += 1
         alt += core.alt_counts
+    n = len(seeds)
+    ci = lambda v: float(1.96 * np.std(v, ddof=1) / np.sqrt(n)) if n > 1 else 0.0
     return {
-        "return": float(np.mean(rets)),
+        "return": float(np.mean(rets)),          # shaped reward (depends on the reward version!)
         "return_std": float(np.std(rets)),
-        "staleness": float(np.mean(pens)),   # criticality-weighted staleness, lower is better
-        "lost_heat_per_ep": lost["heat"] / len(seeds),
-        "lost_battery_per_ep": lost["battery"] / len(seeds),
+        "staleness": float(np.mean(pens)),       # criticality-weighted staleness, lower is better
+        "staleness_ci95": ci(pens),
+        "staleness_eps": [float(v) for v in pens],
+        "coverage": float(np.mean(covs)),        # criticality-weighted freshness, higher is better
+        "seeds": seeds,
+        "lost_heat_per_ep": lost["heat"] / n,
+        "lost_battery_per_ep": lost["battery"] / n,
         "alt_share": (alt / max(alt.sum(), 1)).round(2).tolist(),
     }
 
