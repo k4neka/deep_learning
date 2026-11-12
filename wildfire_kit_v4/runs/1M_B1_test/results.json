@@ -1,0 +1,309 @@
+{
+  "train_fps": 331,
+  "train_minutes": 63.4,
+  "args": {
+    "steps": 1000000,
+    "n_envs": 16,
+    "seed": 42,
+    "out": "runs/ppo_cpu_1M",
+    "subproc": true,
+    "start_alt": 1,
+    "size": 128,
+    "device": "cpu",
+    "maps": "rolling_hills,mountain_valley,dense_forest,farmland",
+    "test_maps": "lake_shore,urban_interface",
+    "difficulty": "easy,medium",
+    "test_difficulty": "medium",
+    "eval_episodes": 20,
+    "fire_models": "rothermel",
+    "test_fire_models": "rothermel"
+  },
+  "curve": [
+    {
+      "return": 1.7789160105842725,
+      "return_std": 3.0313292683106465,
+      "staleness": 0.9903049545288086,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "steps": 172032,
+      "minutes": 8.4
+    },
+    {
+      "return": 1.6646883829671517,
+      "return_std": 1.9061945844589216,
+      "staleness": 0.9878562877178192,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.33,
+        0.67
+      ],
+      "steps": 344064,
+      "minutes": 17.1
+    },
+    {
+      "return": 1.422274290437716,
+      "return_std": 2.455041464352492,
+      "staleness": 0.9864651372432709,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.12,
+        0.26,
+        0.62
+      ],
+      "steps": 516096,
+      "minutes": 25.9
+    },
+    {
+      "return": 2.3054242732073997,
+      "return_std": 2.248174452499116,
+      "staleness": 0.971963634689649,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.01,
+        0.99
+      ],
+      "steps": 688128,
+      "minutes": 34.6
+    },
+    {
+      "return": 1.7543677425038573,
+      "return_std": 2.192754270381529,
+      "staleness": 0.9774238624572755,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "steps": 860160,
+      "minutes": 43.3
+    },
+    {
+      "return": 0.4254987485787952,
+      "return_std": 1.049622848495226,
+      "staleness": 0.9875430583953857,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.43,
+        0.57
+      ],
+      "steps": 1032192,
+      "minutes": 52.0
+    }
+  ],
+  "final": {
+    "train_maps": {
+      "random": {
+        "return": 2.204255043459569,
+        "return_std": 6.911572187405623,
+        "staleness": 0.9808867895766527,
+        "lost_heat_per_ep": 0.2,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.34,
+          0.33,
+          0.33
+        ]
+      },
+      "lawnmower": {
+        "return": 5.8418918784872975,
+        "return_std": 1.4860425611127455,
+        "staleness": 0.9719469381570816,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "greedy": {
+        "return": 13.012482917870596,
+        "return_std": 9.21712822116145,
+        "staleness": 0.9487734279334546,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.82,
+          0.18
+        ]
+      },
+      "ppo": {
+        "return": 1.7802925929625286,
+        "return_std": 2.826102873771954,
+        "staleness": 0.9774885966281095,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.5,
+          0.5
+        ]
+      },
+      "ppo_3drones": {
+        "return": -8.109897574496854,
+        "return_std": 14.717812023998553,
+        "staleness": 0.9732698324223359,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.49,
+          0.51
+        ]
+      },
+      "greedy_3drones": {
+        "return": 35.410265517188364,
+        "return_std": 16.821158488817503,
+        "staleness": 0.8668657297740381,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.95,
+          0.05
+        ]
+      }
+    },
+    "unseen_maps": {
+      "random": {
+        "return": 1.623472161129738,
+        "return_std": 4.025318118981599,
+        "staleness": 0.9861195569231844,
+        "lost_heat_per_ep": 0.25,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.33,
+          0.33,
+          0.34
+        ]
+      },
+      "lawnmower": {
+        "return": 6.073376228831118,
+        "return_std": 1.8737104207792223,
+        "staleness": 0.9697383702099323,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "greedy": {
+        "return": 12.39331092267036,
+        "return_std": 8.129077524355404,
+        "staleness": 0.9529424491624037,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.84,
+          0.16
+        ]
+      },
+      "ppo": {
+        "return": 1.4044050463486415,
+        "return_std": 2.0513822530093497,
+        "staleness": 0.9777287030518055,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.46,
+          0.54
+        ]
+      },
+      "ppo_3drones": {
+        "return": -8.607792160516977,
+        "return_std": 15.399651322910165,
+        "staleness": 0.9731738127470017,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.45,
+          0.55
+        ]
+      },
+      "greedy_3drones": {
+        "return": 35.96012523377501,
+        "return_std": 12.88852039523392,
+        "staleness": 0.8660923198809225,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.95,
+          0.05
+        ]
+      }
+    }
+  },
+  "cross_simulator": {
+    "rothermel": {
+      "random": {
+        "return": 0.5691536207825852,
+        "return_std": 2.373795291246509,
+        "staleness": 0.9871224266898633,
+        "lost_heat_per_ep": 0.25,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.34,
+          0.33,
+          0.34
+        ]
+      },
+      "lawnmower": {
+        "return": 5.942524346175704,
+        "return_std": 1.7324918870903987,
+        "staleness": 0.9733342376947401,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "greedy": {
+        "return": 14.891306233931383,
+        "return_std": 8.616644328354724,
+        "staleness": 0.9413772274851799,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.87,
+          0.13
+        ]
+      },
+      "ppo": {
+        "return": 1.5938335218007131,
+        "return_std": 2.749616198325004,
+        "staleness": 0.9756151258548099,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.53,
+          0.47
+        ]
+      }
+    }
+  }
+}
