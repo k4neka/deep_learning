@@ -1,0 +1,511 @@
+{
+  "train_fps": 275,
+  "train_minutes": 48.1,
+  "args": {
+    "steps": 500000,
+    "n_envs": 16,
+    "n_steps": 512,
+    "ent_coef": 0.005,
+    "re_weight": 20.0,
+    "seed": 42,
+    "out": "runs/B4_re20_cov",
+    "subproc": true,
+    "vecnorm": true,
+    "start_alt": 1,
+    "size": 128,
+    "device": "cpu",
+    "maps": "rolling_hills,mountain_valley,dense_forest,farmland",
+    "test_maps": "lake_shore,urban_interface",
+    "difficulty": "easy,medium",
+    "test_difficulty": "medium",
+    "eval_episodes": 20,
+    "fire_models": "rothermel",
+    "test_fire_models": "rothermel"
+  },
+  "curve": [
+    {
+      "return": 0.5219035432511165,
+      "return_std": 0.9485414562441323,
+      "staleness": 0.9928844108581544,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "fire_cov": 0.003964129447458078,
+      "fire_cov_std": 0.00538795901520626,
+      "fire_cov_crit": 0.003118830883841287,
+      "fire_cov_crit_std": 0.003842880458872644,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 90112,
+      "minutes": 5.4,
+      "return_stoch": 0.8761017961349516,
+      "staleness_stoch": 0.9897406125068665
+    },
+    {
+      "return": 0.49267961185267695,
+      "return_std": 1.4255566837813238,
+      "staleness": 0.9813216432332993,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.15,
+        0.85
+      ],
+      "fire_cov": 0.020362649525190193,
+      "fire_cov_std": 0.021536523939696597,
+      "fire_cov_crit": 0.01982300221909357,
+      "fire_cov_crit_std": 0.021719000363305915,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 180224,
+      "minutes": 10.9,
+      "return_stoch": 1.8278192203697572,
+      "staleness_stoch": 0.9723675968816134
+    },
+    {
+      "return": 0.8091736408888247,
+      "return_std": 0.8102135461486184,
+      "staleness": 0.9729485365152358,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.38,
+        0.62
+      ],
+      "fire_cov": 0.03067988923592611,
+      "fire_cov_std": 0.029670645587596127,
+      "fire_cov_crit": 0.029280210556446685,
+      "fire_cov_crit_std": 0.03419467212016424,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 270336,
+      "minutes": 16.4,
+      "return_stoch": 0.8760496096076625,
+      "staleness_stoch": 0.9828597055444351
+    },
+    {
+      "return": 1.8786738101575484,
+      "return_std": 1.542353019089713,
+      "staleness": 0.9850920863151551,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.22,
+        0.78
+      ],
+      "fire_cov": 0.016925551547009306,
+      "fire_cov_std": 0.018506283067564556,
+      "fire_cov_crit": 0.014853283729913533,
+      "fire_cov_crit_std": 0.014780206291870341,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 360448,
+      "minutes": 21.8,
+      "return_stoch": 5.187271094141468,
+      "staleness_stoch": 0.9662747373183569
+    },
+    {
+      "return": 0.9063438459447797,
+      "return_std": 0.35334126438847296,
+      "staleness": 0.9785722271203994,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.82,
+        0.18
+      ],
+      "fire_cov": 0.016277531946222355,
+      "fire_cov_std": 0.03173305284015479,
+      "fire_cov_crit": 0.015199080365476316,
+      "fire_cov_crit_std": 0.02965798464527319,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 450560,
+      "minutes": 27.3,
+      "return_stoch": 4.016314736068908,
+      "staleness_stoch": 0.967027657097602
+    },
+    {
+      "return": 9.60870538336943,
+      "return_std": 7.4929697234048955,
+      "staleness": 0.9402687155803043,
+      "lost_heat_per_ep": 0.0,
+      "lost_battery_per_ep": 0.0,
+      "alt_share": [
+        0.0,
+        0.42,
+        0.58
+      ],
+      "fire_cov": 0.046843389690819505,
+      "fire_cov_std": 0.029914180083869844,
+      "fire_cov_crit": 0.04941844804778931,
+      "fire_cov_crit_std": 0.03312599187884979,
+      "fire_cov_episodes": 5,
+      "fire_steps_share": 1.0,
+      "steps": 540672,
+      "minutes": 32.8,
+      "return_stoch": 8.571148811823406,
+      "staleness_stoch": 0.9446596369497555
+    }
+  ],
+  "final": {
+    "train_maps": {
+      "random": {
+        "return": 2.204255043459569,
+        "return_std": 6.911572187405623,
+        "staleness": 0.9808867895766527,
+        "lost_heat_per_ep": 0.2,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.34,
+          0.33,
+          0.33
+        ],
+        "fire_cov": 0.011237478697730004,
+        "fire_cov_std": 0.01825858426620815,
+        "fire_cov_crit": 0.00946028660448024,
+        "fire_cov_crit_std": 0.01589029709348807,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "lawnmower": {
+        "return": 5.8418918784872975,
+        "return_std": 1.4860425611127455,
+        "staleness": 0.9719469381570816,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fire_cov": 0.02227395336524279,
+        "fire_cov_std": 0.006858538932426473,
+        "fire_cov_crit": 0.021444503058856677,
+        "fire_cov_crit_std": 0.007106835966037737,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "greedy": {
+        "return": 13.012482917870596,
+        "return_std": 9.21712822116145,
+        "staleness": 0.9487734279334546,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.82,
+          0.18
+        ],
+        "fire_cov": 0.043293478850701776,
+        "fire_cov_std": 0.030118353086810077,
+        "fire_cov_crit": 0.053667419656021044,
+        "fire_cov_crit_std": 0.04256526000460013,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo": {
+        "return": 7.300367692386631,
+        "return_std": 6.123199406908549,
+        "staleness": 0.965928613126278,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.07,
+          0.46,
+          0.47
+        ],
+        "fire_cov": 0.020261891160710192,
+        "fire_cov_std": 0.01748690706196875,
+        "fire_cov_crit": 0.023080749298546865,
+        "fire_cov_crit_std": 0.02268317397570294,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo_stoch": {
+        "return": 6.696819019266407,
+        "return_std": 4.71627419545582,
+        "staleness": 0.9648567942480246,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.06,
+          0.32,
+          0.62
+        ],
+        "fire_cov": 0.01965556804724548,
+        "fire_cov_std": 0.016405884024171813,
+        "fire_cov_crit": 0.02265335497385676,
+        "fire_cov_crit_std": 0.019628168415169973,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo_3drones": {
+        "return": 4.833325165017676,
+        "return_std": 11.744863543816965,
+        "staleness": 0.9504228422741094,
+        "lost_heat_per_ep": 0.15,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.06,
+          0.54,
+          0.4
+        ],
+        "fire_cov": 0.039275619393526834,
+        "fire_cov_std": 0.024110344861787425,
+        "fire_cov_crit": 0.043645879133037024,
+        "fire_cov_crit_std": 0.030960003182463943,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "greedy_3drones": {
+        "return": 35.410265517188364,
+        "return_std": 16.821158488817503,
+        "staleness": 0.8668657297740381,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.95,
+          0.05
+        ],
+        "fire_cov": 0.11896134092937424,
+        "fire_cov_std": 0.07068132868582962,
+        "fire_cov_crit": 0.13621031298994296,
+        "fire_cov_crit_std": 0.07739597629187857,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      }
+    },
+    "unseen_maps": {
+      "random": {
+        "return": 1.623472161129738,
+        "return_std": 4.025318118981599,
+        "staleness": 0.9861195569231844,
+        "lost_heat_per_ep": 0.25,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.33,
+          0.33,
+          0.34
+        ],
+        "fire_cov": 0.005805845098381798,
+        "fire_cov_std": 0.007593304492761119,
+        "fire_cov_crit": 0.006252640942953834,
+        "fire_cov_crit_std": 0.008382467137569587,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "lawnmower": {
+        "return": 6.073376228831118,
+        "return_std": 1.8737104207792223,
+        "staleness": 0.9697383702099323,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fire_cov": 0.023597574986078212,
+        "fire_cov_std": 0.010060833640150538,
+        "fire_cov_crit": 0.02357302046206098,
+        "fire_cov_crit_std": 0.010370837580582735,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "greedy": {
+        "return": 12.39331092267036,
+        "return_std": 8.129077524355404,
+        "staleness": 0.9529424491624037,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.84,
+          0.16
+        ],
+        "fire_cov": 0.03821741498918559,
+        "fire_cov_std": 0.02231398535389893,
+        "fire_cov_crit": 0.04923403559859082,
+        "fire_cov_crit_std": 0.037994335381215286,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo": {
+        "return": 4.615064144653795,
+        "return_std": 5.175189030508343,
+        "staleness": 0.9783182477653026,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.03,
+          0.45,
+          0.52
+        ],
+        "fire_cov": 0.01411789965323032,
+        "fire_cov_std": 0.014066533002118166,
+        "fire_cov_crit": 0.014328194127699248,
+        "fire_cov_crit_std": 0.014620140345707557,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo_stoch": {
+        "return": 4.810402987678563,
+        "return_std": 4.397041556968948,
+        "staleness": 0.9738159411436331,
+        "lost_heat_per_ep": 0.1,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.1,
+          0.37,
+          0.53
+        ],
+        "fire_cov": 0.015591514548048862,
+        "fire_cov_std": 0.01372373166935841,
+        "fire_cov_crit": 0.014777257283292763,
+        "fire_cov_crit_std": 0.012610871838503665,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo_3drones": {
+        "return": 3.515143684960774,
+        "return_std": 6.697307132549513,
+        "staleness": 0.9684518260459105,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.03,
+          0.5,
+          0.47
+        ],
+        "fire_cov": 0.028733918032276783,
+        "fire_cov_std": 0.0261592132001871,
+        "fire_cov_crit": 0.0283897305200219,
+        "fire_cov_crit_std": 0.026182582885675734,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "greedy_3drones": {
+        "return": 35.96012523377501,
+        "return_std": 12.88852039523392,
+        "staleness": 0.8660923198809225,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.95,
+          0.05
+        ],
+        "fire_cov": 0.10875869061000787,
+        "fire_cov_std": 0.0447755139036598,
+        "fire_cov_crit": 0.132973894352266,
+        "fire_cov_crit_std": 0.05445619228448144,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      }
+    }
+  },
+  "cross_simulator": {
+    "rothermel": {
+      "random": {
+        "return": 0.5691536207825852,
+        "return_std": 2.373795291246509,
+        "staleness": 0.9871224266898633,
+        "lost_heat_per_ep": 0.25,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.34,
+          0.33,
+          0.34
+        ],
+        "fire_cov": 0.005919806067300669,
+        "fire_cov_std": 0.007686956708672251,
+        "fire_cov_crit": 0.0054480945690351945,
+        "fire_cov_crit_std": 0.006539975757169156,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "lawnmower": {
+        "return": 5.942524346175704,
+        "return_std": 1.7324918870903987,
+        "staleness": 0.9733342376947401,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fire_cov": 0.022402704377082645,
+        "fire_cov_std": 0.007966586009015147,
+        "fire_cov_crit": 0.02216510157258749,
+        "fire_cov_crit_std": 0.008467080958330465,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "greedy": {
+        "return": 14.891306233931383,
+        "return_std": 8.616644328354724,
+        "staleness": 0.9413772274851799,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.0,
+          0.87,
+          0.13
+        ],
+        "fire_cov": 0.05060956182883236,
+        "fire_cov_std": 0.026255193276418787,
+        "fire_cov_crit": 0.06158581565223774,
+        "fire_cov_crit_std": 0.03889221654974536,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo": {
+        "return": 6.650580235570908,
+        "return_std": 7.256771072174572,
+        "staleness": 0.9695924443105856,
+        "lost_heat_per_ep": 0.0,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.06,
+          0.48,
+          0.46
+        ],
+        "fire_cov": 0.017056746394045055,
+        "fire_cov_std": 0.018967873775704854,
+        "fire_cov_crit": 0.020365670556419968,
+        "fire_cov_crit_std": 0.02492519151196876,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      },
+      "ppo_stoch": {
+        "return": 6.869481036040211,
+        "return_std": 5.802057918139804,
+        "staleness": 0.9647564750505081,
+        "lost_heat_per_ep": 0.05,
+        "lost_battery_per_ep": 0.0,
+        "alt_share": [
+          0.09,
+          0.36,
+          0.56
+        ],
+        "fire_cov": 0.021273744592688736,
+        "fire_cov_std": 0.015214956948838875,
+        "fire_cov_crit": 0.022455191812104276,
+        "fire_cov_crit_std": 0.01841801750998241,
+        "fire_cov_episodes": 20,
+        "fire_steps_share": 1.0
+      }
+    }
+  }
+}

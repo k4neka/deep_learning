@@ -31,6 +31,22 @@ An important remaining question is whether the improved performance comes from b
 - Investigate the weaker performance on unseen maps, particularly urban interface environments.
 - Further improve fire tracking after the initial detection, where PPO still performs below the greedy baseline.
 
+**### 4. Additional Evaluation Metrics**
+
+The evaluation function (`evaluate()` in `baselines.py`) was extended with two additional metrics: `fire_cov` and `fire_cov_crit`.
+
+These metrics enable a more objective comparison between different policies, including policies trained with different reward functions. They are independent of the PPO training reward and do not affect policy behaviour or training.
+
+- **Average Fire Coverage (`fire_cov`):** Measures the proportion of all currently burning cells that are detected by at least one drone at each time step.
+
+- **Criticality-Weighted Fire Coverage (`fire_cov_crit`):** Measures the proportion of the total fire criticality that is detected by the drones. It uses the existing `criticality()` function, assigning greater importance to fires near houses and in forests.
+
+Both metrics are calculated at each time step and averaged over the episode. Time steps without active fires are excluded. Episode-level means, standard deviations, the number of episodes containing fire, and the share of time steps with active fire are also recorded.
+
+The metrics use the actual sensor detection mask, accounting for sensor visibility, altitude, detection probability, smoke and other existing detection limitations. Each burning cell is counted only once, even if detected by multiple drones.
+
+No changes were made to the reward function, training procedure, policy behaviour or existing evaluation metrics. The new metrics are intended exclusively for comparing fire detection and monitoring performance across different policies.
+
 
 ## B3 — PPO Entropy and Training Duration Experiment
 

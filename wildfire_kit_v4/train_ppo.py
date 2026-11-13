@@ -22,6 +22,11 @@ v6 (changes vs v5):
   * PPO verbose=1: SB3 prints its training table (train/entropy_loss, explained_variance, ...) in the log.
     This only changes the printout, not the training.
 
+v7 (changes vs v6; printout only, training unchanged):
+  * The periodic and the final printout also show fire_cov and fire_cov_crit (reward-independent fire
+    coverage metrics from baselines.evaluate), and the cross-simulator part prints two extra tables.
+    They are also in results.json. Needs the matching baselines.py (evaluate() returning these keys).
+
 Usage:
     python train_ppo.py --steps 50000 --n-envs 8 --subproc --out runs/smoke      # quick test
     python train_ppo.py --steps 3000000 --n-envs 32 --subproc --out runs/ppo     # real run (VSC)
@@ -165,7 +170,8 @@ def main():
         print(f"[{m['minutes']:5.1f} min] {done_steps:8d} steps  score={m['return']:6.2f}  "
               f"score_stoch={ms['return']:6.2f}  "
               f"staleness={m['staleness']:.3f}  lost heat/battery={m['lost_heat_per_ep']:.2f}/"
-              f"{m['lost_battery_per_ep']:.2f}  alt={m['alt_share']}", flush=True)
+              f"{m['lost_battery_per_ep']:.2f}  alt={m['alt_share']}  "
+              f"fire_cov={m['fire_cov']:.2f}  fire_cov_crit={m['fire_cov_crit']:.2f}", flush=True)
     model.save(model_path)
     if args.vecnorm:
         env.save(os.path.join(args.out, "vecnormalize.pkl"))
@@ -209,12 +215,18 @@ def main():
         print(f"\n{split} ({args.test_difficulty}):")
         for name, m in res.items():
             print(f"  {name:15s} score {m['return']:7.2f}  staleness {m['staleness']:.3f}  "
-                  f"lost heat/battery {m['lost_heat_per_ep']:.2f}/{m['lost_battery_per_ep']:.2f}")
+                  f"lost heat/battery {m['lost_heat_per_ep']:.2f}/{m['lost_battery_per_ep']:.2f}  "
+                  f"fire_cov {m['fire_cov']:.2f}  fire_cov_crit {m['fire_cov_crit']:.2f}")
     cols = ["random", "lawnmower", "greedy", "ppo", "ppo_stoch"]
     print(f"\ncross-simulator test (all map types, {args.test_difficulty}; trained on fire: {args.fire_models}):")
     print(f"  {'fire model':12s} " + " ".join(f"{n:>10s}" for n in cols))
     for fm, res in cross.items():
         print(f"  {fm:12s} " + " ".join(f"{res[n]['return']:10.2f}" for n in cols))
+    for key, label in [("fire_cov", "fire coverage"), ("fire_cov_crit", "criticality-weighted fire coverage")]:
+        print(f"\ncross-simulator test, {label} ({key}):")
+        print(f"  {'fire model':12s} " + " ".join(f"{n:>10s}" for n in cols))
+        for fm, res in cross.items():
+            print(f"  {fm:12s} " + " ".join(f"{res[n][key]:10.2f}" for n in cols))
     print("train fps:", round(fps))
 
 

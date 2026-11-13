@@ -80,25 +80,53 @@ class Greedy:
 
 def evaluate(policy, n_drones=1, seeds=range(1000, 1030), size=128, max_steps=300, start_alt=1,
              map_types="random", difficulty="medium", safety_return=True, fire_models="native"):
-    """Each seed gets a map type, difficulty and fire engine drawn from the given lists. Returns a metric dict."""
+    """Each seed gets a map type, difficulty and fire engine drawn from the given lists. Returns a metric dict.
+
+    Two reward-independent fire-coverage metrics (evaluation only, they use no reward weights):
+      fire_cov       C_t      = (# burning cells detected this step) / (# burning cells on the map)
+      fire_cov_crit  C_t^crit = sum of criticality() over the detected burning cells / sum of criticality() over all burning cells
+    'Detected' is exactly the simulator's own per-step detection mask (core._st["det"], the one R_D is built from):
+    a burning cell lying inside the field of view of at least one drone, at that drone's altitude, that the sensor
+    actually reported (miss probability, smoke and the 'small fires vanish' resolution limit of the high altitude
+    are therefore included). It is a union over drones, so a cell seen by several drones counts once. It is the
+    instantaneous coverage of this step (no memory of earlier looks). Dead drones observe nothing.
+    Division by zero: a step without any burning cell has no defined coverage and is left out of the episode mean
+    (criticality() is >= fire_map, so the criticality sum is zero exactly when no cell burns). An episode without
+    any burning step gives nan and is left out of the mean over episodes. Episodes are weighted equally.
+    """
     core = SwarmCore(size=size, n_drones=n_drones, max_steps=max_steps, start_alt=start_alt,
                      map_types=map_types, difficulty=difficulty, safety_return=safety_return,
                      fire_models=fire_models)
     rets, pens, lost, alt = [], [], {"heat": 0, "battery": 0}, np.zeros(3)
+    covs, covs_crit, fire_share = [], [], []
     for s in seeds:
         core.reset(seed=s)
         policy.reset(core)
         ret, p_sum, done = 0.0, 0.0, False
+        c_obs, c_crit = [], []                              # per-step coverage, only steps with fire
         while not done:
             r, done, info = core.step([policy.act(core, i) for i in range(n_drones)])
             ret += r
             p_sum += info["penalty"]
+            burning = core._F > 0                           # fire cells of this step (same mask as in the simulator)
+            n_burn = int(burning.sum())
+            if n_burn:
+                det = core._st["det"]                       # unique burning cells detected this step (union over drones)
+                crit = core.criticality()                   # existing project function, zero where nothing burns
+                c_obs.append(float(det.sum()) / n_burn)
+                c_crit.append(float((crit * det).sum()) / float(crit.sum()))
         rets.append(ret)
         pens.append(p_sum / core.t)
+        covs.append(float(np.mean(c_obs)) if c_obs else float("nan"))
+        covs_crit.append(float(np.mean(c_crit)) if c_crit else float("nan"))
+        fire_share.append(len(c_obs) / core.t)
         for why in core.lost_reason:
             if why:
                 lost[why] += 1
         alt += core.alt_counts
+    cv, cc = np.array(covs), np.array(covs_crit)
+    ok = ~np.isnan(cv)                                      # episodes with at least one burning step
+    nan = float("nan")
     return {
         "return": float(np.mean(rets)),
         "return_std": float(np.std(rets)),
@@ -106,6 +134,12 @@ def evaluate(policy, n_drones=1, seeds=range(1000, 1030), size=128, max_steps=30
         "lost_heat_per_ep": lost["heat"] / len(seeds),
         "lost_battery_per_ep": lost["battery"] / len(seeds),
         "alt_share": (alt / max(alt.sum(), 1)).round(2).tolist(),
+        "fire_cov": float(cv[ok].mean()) if ok.any() else nan,
+        "fire_cov_std": float(cv[ok].std()) if ok.any() else nan,
+        "fire_cov_crit": float(cc[ok].mean()) if ok.any() else nan,
+        "fire_cov_crit_std": float(cc[ok].std()) if ok.any() else nan,
+        "fire_cov_episodes": int(ok.sum()),                 # n for the two metrics above (for SE = std / sqrt(n))
+        "fire_steps_share": float(np.mean(fire_share)),     # share of steps that had any burning cell
     }
 
 
@@ -127,3 +161,5 @@ if __name__ == "__main__":
         print(f"{diff:10s} " + " ".join(f"{m['return']:10.2f}" for m in res) +
               f"   lost(heat/battery) greedy {res[2]['lost_heat_per_ep']:.2f}/{res[2]['lost_battery_per_ep']:.2f}"
               f"  ({time.time() - t0:.0f}s)")
+        print(f"{'  fire_cov':10s} " + " ".join(f"{m['fire_cov']:10.2f}" for m in res))
+        print(f"{'  fire_crit':10s} " + " ".join(f"{m['fire_cov_crit']:10.2f}" for m in res))
