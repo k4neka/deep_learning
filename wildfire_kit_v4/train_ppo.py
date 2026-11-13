@@ -27,8 +27,10 @@ v7 (changes vs v6, B4 behaviour unchanged when the new flags are not given):
     altitude; a controller flies there for at most --macro-horizon low-level steps (see macro.py).
   * --steps always counts LOW-LEVEL simulator steps, in both modes, so runs are comparable.
     The curve in results.json logs "low_steps".
-  * --reward-preset coverage: reward = coverage of the team map - 5 per lost drone (the original
-    v4 reward). Default "v6" = B2-B4 reward (with --re-weight for R_E).
+  * --reward-preset coverage: reward = coverage of the team map (the original v4 reward without the
+    loss penalty). Default "v6" = B2-B4 reward (with --re-weight for R_E).
+  * --loss-weight (default 0): penalty per lost drone. It is now OFF by default; all runs before
+    13/11/2026 used 5. Pass --loss-weight 5 to reproduce them.
   * --gamma and --batch-size flags (defaults: primitive 0.98 / 1024, macro 0.95 / 512);
     in macro mode --n-steps defaults to 128 (more PPO updates for the same budget).
   * Final evaluation stores one staleness value per mission ("staleness_eps"), for paired comparisons
@@ -57,7 +59,7 @@ from baselines import evaluate, Lawnmower, Greedy, RandomPolicy
 
 REWARD_PRESETS = {
     "v6": {},                                                     # REWARD_W in env.py (B2-B4)
-    "coverage": dict(E=0.0, D=0.0, C=1.0, FP=0.0, FN=0.0),        # original v4 reward: coverage - 5 * lost
+    "coverage": dict(E=0.0, D=0.0, C=1.0, FP=0.0, FN=0.0),        # coverage only (loss: see --loss-weight)
 }
 
 
@@ -136,10 +138,13 @@ def main():
     ap.add_argument("--ent-coef", type=float, default=0.02,
                     help="PPO entropy bonus weight (0.02 = value used in B1 and B2)")
     ap.add_argument("--reward-preset", choices=list(REWARD_PRESETS), default="v6",
-                    help="v6 = B2-B4 reward; coverage = coverage of the team map - 5 per lost drone")
+                    help="v6 = B2-B4 reward; coverage = coverage of the team map only")
     ap.add_argument("--re-weight", type=float, default=2.0,
                     help="reward weight of R_E (exploration) in TRAINING only; 2.0 = v6 default (B1-B3). "
                          "Only used with --reward-preset v6")
+    ap.add_argument("--loss-weight", type=float, default=0.0,
+                    help="penalty per lost drone (heat / battery). 0 = removed (default since v7); "
+                         "runs before 13/11 used 5. With one drone a loss still ends the episode.")
     ap.add_argument("--action-mode", choices=["primitive", "macro"], default="primitive")
     ap.add_argument("--macro-grid", type=int, default=8, help="macro mode: G x G sectors")
     ap.add_argument("--macro-horizon", type=int, default=8, help="macro mode: max low-level steps per macro-action")
@@ -173,6 +178,7 @@ def main():
     reward_w = dict(REWARD_PRESETS[args.reward_preset])
     if args.reward_preset == "v6":
         reward_w["E"] = args.re_weight
+    reward_w["loss"] = args.loss_weight
     os.makedirs(args.out, exist_ok=True)
     # Use only the cores Slurm gave this job (os.cpu_count() would report the whole node)
     cores = len(os.sched_getaffinity(0))
