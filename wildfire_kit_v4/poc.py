@@ -6,7 +6,8 @@ Deliberately simple (see EXPERIMENTS / report, "proof of concept"):
     no missed fire, no false alarms, no smoke, no heat, no battery, no no-fly zones
   * actions: N, S, E, W, hover (2 cells per move)
   * every cell is equally important (houses / forest weighting comes later)
-  * the fire can be slowed down: it advances once every `fire_every` drone steps
+  * the fire can be slowed down: it advances once every `fire_every` drone steps (may be fractional,
+    e.g. 1.5 = two fire steps every three drone steps)
   * besides the initial fire, new fires can start during the episode (`new_rate` per fire step), so
     there is a reason to keep searching
 
@@ -17,7 +18,10 @@ acc drops when a fire is missed, when the front advances unseen, or when B still
 Reward per step (all terms roughly in [0, 1]):
     r = W_ACC * acc
       + W_FIX * sum over corrected cells of m(c) / max(|F|, Z_MIN)
-      + W_EXP * (1 - acc) * (fraction of the view that was never seen before)
+      + W_EXP * (EXP_FLOOR + (1 - EXP_FLOOR) * (1 - acc)) * novelty
+  novelty = fraction of the view that was never seen before (v1), or, with stale=1 (v2), the mean
+  staleness of the view: min(1, steps since last seen / 60), never seen = 1. EXP_FLOOR (v2) keeps part of
+  the search incentive alive when the fire picture is already good (v1: EXP_FLOOR = 0).
   corrected cell = a cell whose state in B changes when the drone looks at it (fire found, front advanced,
   fire went out). m(c) = 1 + BETA * min(1, d(c) / D) for a cell that becomes "burning" in B, where d(c) is
   its distance to the nearest cell already believed to be burning (a new, separate focus is worth up to
@@ -44,7 +48,7 @@ R = 7                                     # view radius (medium altitude in the 
 MOVE = 2
 N_, S_, E_, W_, HOVER = range(5)
 MOVES = {N_: (0, -1), S_: (0, 1), E_: (1, 0), W_: (-1, 0), HOVER: (0, 0)}
-DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0)
+DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0, exp_floor=0.0, stale=0.0)
 FOCUS_D = 10                              # cells: a new fire farther than this from existing fire is a new focus
 AGE_CAP = 60
 
@@ -81,6 +85,7 @@ class PoCCore:
         self.F_ever = w.burning.copy()
         self.foci = [[int(y), int(x), 0, -1] for y, x in np.argwhere(w.burning)]   # y, x, t_start, t_seen
         self.acc_sum, self.hover = 0.0, 0
+        self._fire_acc = 0.0
         self.t_first = None
         self.last_reward = {}
         self._sense()
@@ -113,7 +118,10 @@ class PoCCore:
                 else:
                     d = np.full(int(new_fire.sum()), wt["d"])
                 fix += float((1.0 + wt["beta"] * np.minimum(1.0, d / wt["d"])).sum())
-        new_seen = float((~self.seen[y0:y1, x0:x1]).mean())
+        if wt["stale"]:
+            novelty = float(np.minimum(1.0, (self.t - self.last_seen[y0:y1, x0:x1]) / AGE_CAP).mean())
+        else:
+            novelty = float((~self.seen[y0:y1, x0:x1]).mean())
         self.B[y0:y1, x0:x1] = F
         self.burnt_known[y0:y1, x0:x1] = w.burnt[y0:y1, x0:x1]
         self.seen[y0:y1, x0:x1] = True
@@ -123,7 +131,7 @@ class PoCCore:
         for f in self.foci:                                        # focus point inside the view
             if f[3] < 0 and y0 <= f[0] < y1 and x0 <= f[1] < x1:
                 f[3] = self.t
-        return fix, new_seen
+        return fix, novelty
 
     def _track_foci(self, before):
         w = self.world
@@ -142,15 +150,18 @@ class PoCCore:
         self.pos = np.clip(self.pos + MOVE * np.array([dx, dy]), 0, n - 1)
         self.hover += int((self.pos == old).all())
         self.t += 1
-        if self.t % self.fire_every == 0:
+        self._fire_acc += 1.0 / self.fire_every
+        while self._fire_acc >= 1.0 - 1e-9:
+            self._fire_acc -= 1.0
             before = self.F_ever.copy()
             w.step()
             self.F_ever |= w.burning
             self._track_foci(before)
-        fix, new_seen = self._sense()
+        fix, novelty = self._sense()
         acc = self.acc()
         z = max(float(w.burning.sum()), wt["z_min"])
-        parts = dict(acc=acc, fix=fix / z, exp=(1.0 - acc) * new_seen)
+        gate = wt["exp_floor"] + (1.0 - wt["exp_floor"]) * (1.0 - acc)
+        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty)
         r = wt["acc"] * parts["acc"] + wt["fix"] * parts["fix"] + wt["exp"] * parts["exp"]
         self.acc_sum += acc
         self.last_reward = parts

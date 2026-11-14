@@ -56,7 +56,7 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--size", type=int, default=64)
     ap.add_argument("--max-steps", type=int, default=300)
-    ap.add_argument("--fire-every", type=int, default=4, help="the fire advances once every N drone steps")
+    ap.add_argument("--fire-every", type=float, default=4, help="the fire advances once every N drone steps (may be fractional)")
     ap.add_argument("--new-rate", type=float, default=0.01, help="chance of a new fire per fire step")
     ap.add_argument("--maps", default="rolling_hills,mountain_valley,dense_forest,farmland")
     ap.add_argument("--test-maps", default="lake_shore,urban_interface")
@@ -64,6 +64,13 @@ def main():
     ap.add_argument("--w-fix", type=float, default=1.0)
     ap.add_argument("--w-exp", type=float, default=0.5)
     ap.add_argument("--beta", type=float, default=3.0, help="extra weight of a new, separate focus")
+    ap.add_argument("--exp-floor", type=float, default=0.0,
+                    help="v2: part of the exploration reward kept even when the fire picture is good (v1: 0)")
+    ap.add_argument("--stale", action="store_true",
+                    help="v2: exploration pays for refreshing areas not seen for a long time, not only never-seen ones")
+    ap.add_argument("--eval-new-rate", type=float, default=None,
+                    help="new fire rate used in the FINAL evaluation (default: same as --new-rate); "
+                         "0.01 makes results comparable with the v1 runs")
     ap.add_argument("--eval-episodes", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--init-from", default=None, help="model.zip to start from (curriculum / evaluation only)")
@@ -75,7 +82,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cores = len(os.sched_getaffinity(0))
     torch.set_num_threads(max(1, min(4, cores)))
-    weights = dict(acc=args.w_acc, fix=args.w_fix, exp=args.w_exp, beta=args.beta)
+    weights = dict(acc=args.w_acc, fix=args.w_fix, exp=args.w_exp, beta=args.beta,
+                   exp_floor=args.exp_floor, stale=float(args.stale))
     env_kw = dict(size=args.size, max_steps=args.max_steps, fire_every=args.fire_every, new_rate=args.new_rate,
                   weights=weights)
     print(f"PoC | size {args.size} | fire every {args.fire_every} steps | new fire rate {args.new_rate} | "
@@ -121,15 +129,16 @@ def main():
 
     # final comparison on the same fresh missions for every policy
     seeds = range(5000, 5000 + args.eval_episodes)
+    final_kw = dict(env_kw, new_rate=args.eval_new_rate if args.eval_new_rate is not None else args.new_rate)
     final = {}
     for split, maps in [("train_maps", args.maps), ("unseen_maps", args.test_maps)]:
-        kw = dict(env_kw, map_types=maps)
+        kw = dict(final_kw, map_types=maps)
         final[split] = {name: evaluate(pol, seeds, **kw) for name, pol in
                         [("random", RandomPolicy()), ("lawnmower", Lawnmower()), ("greedy", Greedy()),
                          ("ppo", PPOPolicy(model, True)), ("ppo_stoch", PPOPolicy(model, False))]}
 
     lines = [f"Proof of concept, one drone, size {args.size}, fire advances every {args.fire_every} steps, "
-             f"new fire rate {args.new_rate}, {args.eval_episodes} missions per cell (seeds {seeds[0]}-{seeds[-1]}), "
+             f"new fire rate {final_kw['new_rate']}, {args.eval_episodes} missions per cell (seeds {seeds[0]}-{seeds[-1]}), "
              f"mean +- 95% interval. IoU = overlap of the drone's fire map with the real fire (higher is better).", ""]
     for split, res in final.items():
         lines += [f"### {split}", "",
