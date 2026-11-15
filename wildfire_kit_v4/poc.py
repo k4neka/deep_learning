@@ -27,6 +27,19 @@ Reward per step (all terms roughly in [0, 1]):
   its distance to the nearest cell already believed to be burning (a new, separate focus is worth up to
   1 + BETA times a cell on a known front); m(c) = 1 for other corrections.
 
+v3 (preset "v3" in train_poc.py): reward for the AGE of the information the drone refreshes, plus anti-jitter
+    r = W_ACC * acc + W_FIX * fix + W_AGE * age_view - W_REV * reversed
+  age_view = FIRE_MULT * sum over fire cells in view of min(1, age(c) / T_FIRE) / max(|F|, Z_MIN)
+           +             sum over other cells in view of min(1, age(c) / T_EMPTY) / view area
+  age(c) = steps since the cell was last seen; fire cells = cells that burn or are believed to burn.
+  Looking at something just seen is worth ~0, a fire seen a while ago is worth checking again. Keeping the
+  whole fire fresh pays up to FIRE_MULT / T_FIRE per step whatever its size, more than roaming over empty land
+  (at most ~0.13 per step), so the fire comes first; but once it is fresh, staying there pays little: the
+  drone is paid to patrol (go, leave, come back) instead of sitting on the fire.
+  reversed = 1 if the move is the opposite of the previous move (back-and-forth jitter), else 0.
+  Optional "goto" actions (PoCEnv(action_mode="goto")): the drone picks one of GRID x GRID map sectors and
+  flies to its centre for up to HORIZON steps before deciding again (commits to a trip, no mini jumps).
+
 Evaluation (metrics(), the same for every policy):
     iou           mean acc over the episode (main metric, higher is better)
     t_first       steps until the first fire is in the drone's map (censored at max_steps)
@@ -34,6 +47,10 @@ Evaluation (metrics(), the same for every policy):
     foci_latency  mean steps from the start of a focus until it is seen (unseen foci count as censored)
     hover_frac    fraction of steps the drone did not move
     seen_frac     fraction of the map seen at least once
+    fire_age      mean age (steps since last seen, capped at 60) of the cells that are burning (lower = fresher)
+    dwell_frac    fraction of steps spent re-watching known fire seen <= 5 steps ago without learning anything
+    revisit_gap   mean number of steps between two looks at the same burning cell (1 = watched all the time)
+    rev_frac      fraction of moves that reverse the previous move (back-and-forth jitter)
 """
 import numpy as np
 import gymnasium as gym
@@ -48,7 +65,10 @@ R = 7                                     # view radius (medium altitude in the 
 MOVE = 2
 N_, S_, E_, W_, HOVER = range(5)
 MOVES = {N_: (0, -1), S_: (0, 1), E_: (1, 0), W_: (-1, 0), HOVER: (0, 0)}
-DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0, exp_floor=0.0, stale=0.0)
+DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0, exp_floor=0.0, stale=0.0,
+                 age=0.0, fire_mult=10.0, t_fire=20.0, t_empty=60.0, rev=0.0)
+V3_W = dict(acc=0.3, fix=1.0, exp=0.0, age=1.0, stale=1.0)       # changes on top of DEFAULT_W for preset v3
+DWELL_AGE = 5
 FOCUS_D = 10                              # cells: a new fire farther than this from existing fire is a new focus
 AGE_CAP = 60
 
@@ -85,6 +105,9 @@ class PoCCore:
         self.F_ever = w.burning.copy()
         self.foci = [[int(y), int(x), 0, -1] for y, x in np.argwhere(w.burning)]   # y, x, t_start, t_seen
         self.acc_sum, self.hover = 0.0, 0
+        self.prev_dir, self.moves, self.reversals = None, 0, 0
+        self.dwell, self.gap_sum, self.gap_n = 0, 0.0, 0
+        self.fire_age_sum, self.fire_steps = 0.0, 0
         self._fire_acc = 0.0
         self.t_first = None
         self.last_reward = {}
@@ -102,11 +125,13 @@ class PoCCore:
         return max(0, y - R), min(n, y + R + 1), max(0, x - R), min(n, x + R + 1)
 
     def _sense(self):
-        """The drone looks: returns (corrected-cell mass, fraction of the view never seen before)."""
+        """The drone looks. Returns (corrected-cell mass, novelty of the view (v1/v2), age reward of the view (v3),
+        True if it only re-watched fresh known fire)."""
         w, wt = self.world, self.w
         y0, y1, x0, x1 = self._window()
         F = w.burning[y0:y1, x0:x1]
         Bw = self.B[y0:y1, x0:x1]
+        age = (self.t - self.last_seen[y0:y1, x0:x1]).astype(float)
         changed = Bw != F
         fix = 0.0
         if changed.any():
@@ -119,9 +144,18 @@ class PoCCore:
                     d = np.full(int(new_fire.sum()), wt["d"])
                 fix += float((1.0 + wt["beta"] * np.minimum(1.0, d / wt["d"])).sum())
         if wt["stale"]:
-            novelty = float(np.minimum(1.0, (self.t - self.last_seen[y0:y1, x0:x1]) / AGE_CAP).mean())
+            novelty = float(np.minimum(1.0, age / AGE_CAP).mean())
         else:
             novelty = float((~self.seen[y0:y1, x0:x1]).mean())
+        fireish = F | Bw
+        z = max(float(w.burning.sum()), wt["z_min"])
+        age_r = float(wt["fire_mult"] * np.minimum(1.0, age[fireish] / wt["t_fire"]).sum() / z
+                      + np.minimum(1.0, age[~fireish] / wt["t_empty"]).sum() / (2 * R + 1) ** 2)
+        known = F & Bw & self.seen[y0:y1, x0:x1]                  # burning cells already known and looked at again
+        dwell = bool((known & (age <= DWELL_AGE)).any()) and not changed.any()
+        g = age[known]
+        self.gap_sum += float(np.minimum(g, AGE_CAP).sum())
+        self.gap_n += int(g.size)
         self.B[y0:y1, x0:x1] = F
         self.burnt_known[y0:y1, x0:x1] = w.burnt[y0:y1, x0:x1]
         self.seen[y0:y1, x0:x1] = True
@@ -131,7 +165,7 @@ class PoCCore:
         for f in self.foci:                                        # focus point inside the view
             if f[3] < 0 and y0 <= f[0] < y1 and x0 <= f[1] < x1:
                 f[3] = self.t
-        return fix, novelty
+        return fix, novelty, age_r, dwell
 
     def _track_foci(self, before):
         w = self.world
@@ -149,6 +183,13 @@ class PoCCore:
         old = self.pos.copy()
         self.pos = np.clip(self.pos + MOVE * np.array([dx, dy]), 0, n - 1)
         self.hover += int((self.pos == old).all())
+        reversed_ = 0
+        if (dx, dy) != (0, 0):
+            self.moves += 1
+            if self.prev_dir is not None and (dx, dy) == (-self.prev_dir[0], -self.prev_dir[1]):
+                reversed_ = 1
+                self.reversals += 1
+            self.prev_dir = (dx, dy)
         self.t += 1
         self._fire_acc += 1.0 / self.fire_every
         while self._fire_acc >= 1.0 - 1e-9:
@@ -157,12 +198,17 @@ class PoCCore:
             w.step()
             self.F_ever |= w.burning
             self._track_foci(before)
-        fix, novelty = self._sense()
+        fix, novelty, age_r, dwell = self._sense()
+        self.dwell += int(dwell)
         acc = self.acc()
+        if w.burning.any():
+            self.fire_age_sum += float(np.minimum(AGE_CAP, self.t - self.last_seen[w.burning]).mean())
+            self.fire_steps += 1
         z = max(float(w.burning.sum()), wt["z_min"])
         gate = wt["exp_floor"] + (1.0 - wt["exp_floor"]) * (1.0 - acc)
-        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty)
-        r = wt["acc"] * parts["acc"] + wt["fix"] * parts["fix"] + wt["exp"] * parts["exp"]
+        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty, age=age_r, rev=float(reversed_))
+        r = (wt["acc"] * parts["acc"] + wt["fix"] * parts["fix"] + wt["exp"] * parts["exp"]
+             + wt["age"] * parts["age"] - wt["rev"] * parts["rev"])
         self.acc_sum += acc
         self.last_reward = parts
         done = self.t >= self.max_steps
@@ -202,17 +248,62 @@ class PoCCore:
                     foci_found=float(np.mean([f[3] >= 0 for f in self.foci])) if self.foci else 1.0,
                     foci_latency=float(np.mean(lat)) if lat else 0.0,
                     hover_frac=self.hover / T,
-                    seen_frac=float(self.seen.mean()))
+                    seen_frac=float(self.seen.mean()),
+                    fire_age=self.fire_age_sum / self.fire_steps if self.fire_steps else 0.0,
+                    dwell_frac=self.dwell / T,
+                    revisit_gap=self.gap_sum / self.gap_n if self.gap_n else float(AGE_CAP),
+                    rev_frac=self.reversals / max(self.moves, 1))
+
+
+class Goto:
+    """'goto' actions: sector k of a GRID x GRID partition of the map; the drone flies to the sector centre for
+    up to `horizon` steps (stops early when it arrives; if it is already there it hovers one step)."""
+
+    def __init__(self, size, grid=8, horizon=8):
+        self.size, self.grid, self.horizon = size, grid, horizon
+        self.cell = size // grid
+        self.k = None
+        self.left = 0
+
+    def target(self, k):
+        k = int(k)
+        return (k % self.grid) * self.cell + self.cell // 2, (k // self.grid) * self.cell + self.cell // 2
+
+    def start(self, k):
+        self.k, self.left = int(k), self.horizon
+
+    def arrived(self, pos):
+        tx, ty = self.target(self.k)
+        return abs(pos[0] - tx) <= 1 and abs(pos[1] - ty) <= 1
+
+    def low_action(self, pos):
+        """Next primitive action of the current trip, or None if the trip is over."""
+        if self.left <= 0:
+            return None
+        if self.arrived(pos):
+            if self.left < self.horizon:            # arrived during the trip: the trip ends
+                self.left = 0
+                return None
+            self.left = 0                           # already there when chosen: hover one step
+            return HOVER
+        self.left -= 1
+        return step_towards(pos, self.target(self.k))
 
 
 class PoCEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, size=64, max_steps=300, fire_every=4, new_rate=0.01, map_types="all", weights=None):
+    def __init__(self, size=64, max_steps=300, fire_every=4, new_rate=0.01, map_types="all", weights=None,
+                 action_mode="primitive", grid=8, horizon=8):
         self.core = PoCCore(size=size, max_steps=max_steps, fire_every=fire_every, new_rate=new_rate,
                             map_types=map_types, weights=weights)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(N_CH, OBS, OBS), dtype=np.float32)
-        self.action_space = spaces.Discrete(5)
+        self.action_mode = action_mode
+        if action_mode == "goto":
+            self.goto = Goto(size, grid, horizon)
+            self.action_space = spaces.Discrete(grid * grid)
+        else:
+            self.action_space = spaces.Discrete(5)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -222,8 +313,20 @@ class PoCEnv(gym.Env):
         return self.core.observe(), {}
 
     def step(self, action):
-        r, done, parts = self.core.step(action)
-        info = dict(parts)
+        if self.action_mode == "goto":
+            self.goto.start(action)
+            r, done, n_low = 0.0, False, 0
+            while not done:
+                a = self.goto.low_action(self.core.pos)
+                if a is None:
+                    break
+                rr, done, parts = self.core.step(a)
+                r += rr
+                n_low += 1
+            info = dict(parts, low_steps=n_low)
+        else:
+            r, done, parts = self.core.step(action)
+            info = dict(parts, low_steps=1)
         if done:
             info["episode_metrics"] = self.core.metrics()
         return self.core.observe(), r, False, done, info

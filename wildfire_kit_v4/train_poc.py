@@ -5,6 +5,12 @@ Curriculum (each stage starts from the previous model with --init-from):
     stage 1: python train_poc.py --fire-every 4 --steps 2000000 --out runs/poc_fe4
     stage 2: python train_poc.py --fire-every 2 --steps 2000000 --init-from runs/poc_fe4/model.zip --out runs/poc_fe2
     stage 3: python train_poc.py --fire-every 1 --steps 2000000 --init-from runs/poc_fe2/model.zip --out runs/poc_fe1
+Version 3 (reward for the age of the information, see poc.py), one curriculum per variant:
+    python train_poc.py --preset v3 --fire-every 4 --out runs/v3_age_fe4                     # age reward
+    python train_poc.py --preset v3 --w-rev 0.1 --fire-every 4 --out runs/v3_rev_fe4         # + no back-and-forth
+    python train_poc.py --preset v3 --action-mode goto --steps 300000 --fire-every 4 --out runs/v3_goto_fe4
+                                                                                             # + 'fly to a sector'
+    (with goto, --steps counts decisions; one decision is up to --horizon drone steps)
 Evaluate a saved model only:
     python train_poc.py --steps 0 --init-from runs/poc_fe4/model.zip --fire-every 4 --out runs/poc_fe4_eval
 
@@ -18,14 +24,19 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
-from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, evaluate, MAP_TYPES
+from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, Goto, evaluate, MAP_TYPES, DEFAULT_W, V3_W
 from train_ppo import SmallCNN
 
 # torch >= 2.15 cannot read straight from the zip stream that SB3 passes; read it into memory first (harmless)
 _orig_load = torch.load
 torch.load = lambda f, *a, **k: _orig_load(io.BytesIO(f.read()) if hasattr(f, "read") and not isinstance(f, io.BytesIO) else f, *a, **k)
 
-METRICS = ["iou", "foci_found", "foci_latency", "t_first", "hover_frac", "seen_frac"]
+METRICS = ["iou", "foci_found", "foci_latency", "t_first", "fire_age", "revisit_gap", "dwell_frac", "rev_frac",
+           "hover_frac", "seen_frac"]
+FRACTION = ("iou", "foci_found", "dwell_frac", "rev_frac", "hover_frac", "seen_frac")
+HEADERS = dict(iou="IoU", foci_found="Foci found", foci_latency="Focus latency", t_first="First fire",
+               fire_age="Fire age", revisit_gap="Revisit gap", dwell_frac="Dwell", rev_frac="Reversals",
+               hover_frac="Hover", seen_frac="Map seen")
 
 
 class PPOPolicy:
@@ -37,6 +48,25 @@ class PPOPolicy:
 
     def act(self, core):
         a, _ = self.model.predict(core.observe(), deterministic=self.deterministic)
+        return int(a)
+
+
+class GotoPPOPolicy:
+    """Runs a 'goto' model step by step exactly as PoCEnv does: a new sector is chosen when the trip is over."""
+
+    def __init__(self, model, size, grid, horizon, deterministic=True):
+        self.model, self.deterministic = model, deterministic
+        self.goto = Goto(size, grid, horizon)
+
+    def reset(self, core):
+        self.goto.left = 0
+
+    def act(self, core):
+        a = self.goto.low_action(core.pos)
+        while a is None:
+            k, _ = self.model.predict(core.observe(), deterministic=self.deterministic)
+            self.goto.start(int(k))
+            a = self.goto.low_action(core.pos)
         return int(a)
 
 
@@ -60,10 +90,21 @@ def main():
     ap.add_argument("--new-rate", type=float, default=0.01, help="chance of a new fire per fire step")
     ap.add_argument("--maps", default="rolling_hills,mountain_valley,dense_forest,farmland")
     ap.add_argument("--test-maps", default="lake_shore,urban_interface")
-    ap.add_argument("--w-acc", type=float, default=1.0)
-    ap.add_argument("--w-fix", type=float, default=1.0)
-    ap.add_argument("--w-exp", type=float, default=0.5)
-    ap.add_argument("--beta", type=float, default=3.0, help="extra weight of a new, separate focus")
+    ap.add_argument("--preset", choices=["v1", "v3"], default="v1",
+                    help="v1: IoU + corrections + exploration (v2 = v1 with --stale --exp-floor 0.3); "
+                         "v3: IoU (0.3) + corrections + age of the refreshed information")
+    ap.add_argument("--w-acc", type=float, default=None)
+    ap.add_argument("--w-fix", type=float, default=None)
+    ap.add_argument("--w-exp", type=float, default=None)
+    ap.add_argument("--w-age", type=float, default=None, help="v3: weight of the age reward")
+    ap.add_argument("--fire-mult", type=float, default=None, help="v3: weight of keeping the whole fire fresh (paid per fire cell, divided by the fire size)")
+    ap.add_argument("--t-fire", type=float, default=None, help="v3: steps after which a fire cell is fully worth checking again")
+    ap.add_argument("--t-empty", type=float, default=None, help="v3: same for a cell without fire")
+    ap.add_argument("--w-rev", type=float, default=None, help="penalty for reversing the previous move")
+    ap.add_argument("--action-mode", choices=["primitive", "goto"], default="primitive")
+    ap.add_argument("--grid", type=int, default=8, help="goto: the map is split into grid x grid sectors")
+    ap.add_argument("--horizon", type=int, default=8, help="goto: maximum drone steps per decision")
+    ap.add_argument("--beta", type=float, default=None, help="extra weight of a new, separate focus")
     ap.add_argument("--exp-floor", type=float, default=0.0,
                     help="v2: part of the exploration reward kept even when the fire picture is good (v1: 0)")
     ap.add_argument("--stale", action="store_true",
@@ -82,16 +123,25 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cores = len(os.sched_getaffinity(0))
     torch.set_num_threads(max(1, min(4, cores)))
-    weights = dict(acc=args.w_acc, fix=args.w_fix, exp=args.w_exp, beta=args.beta,
-                   exp_floor=args.exp_floor, stale=float(args.stale))
+    weights = dict(DEFAULT_W, **(V3_W if args.preset == "v3" else {}))
+    weights.update(exp_floor=args.exp_floor)
+    if args.stale:
+        weights["stale"] = 1.0
+    for key, val in [("acc", args.w_acc), ("fix", args.w_fix), ("exp", args.w_exp), ("age", args.w_age),
+                     ("fire_mult", args.fire_mult), ("t_fire", args.t_fire), ("t_empty", args.t_empty),
+                     ("rev", args.w_rev), ("beta", args.beta)]:
+        if val is not None:
+            weights[key] = val
     env_kw = dict(size=args.size, max_steps=args.max_steps, fire_every=args.fire_every, new_rate=args.new_rate,
                   weights=weights)
+    act_kw = dict(action_mode=args.action_mode, grid=args.grid, horizon=args.horizon)
     print(f"PoC | size {args.size} | fire every {args.fire_every} steps | new fire rate {args.new_rate} | "
-          f"weights {weights} | envs {args.n_envs} x {args.n_steps} | cores {cores}", flush=True)
+          f"actions {args.action_mode} | weights {weights} | envs {args.n_envs} x {args.n_steps} | cores {cores}",
+          flush=True)
 
     vec_cls = SubprocVecEnv if args.subproc else DummyVecEnv
     env = make_vec_env(PoCEnv, n_envs=args.n_envs, seed=args.seed, vec_env_cls=vec_cls,
-                       env_kwargs=dict(env_kw, map_types=args.maps))
+                       env_kwargs=dict(env_kw, map_types=args.maps, **act_kw))
     if args.vecnorm:
         env = VecNormalize(env, norm_obs=False, norm_reward=True, gamma=args.gamma)
     policy_kwargs = dict(features_extractor_class=SmallCNN, features_extractor_kwargs=dict(features_dim=128),
@@ -108,20 +158,26 @@ def main():
                     ent_coef=args.ent_coef, policy_kwargs=policy_kwargs)
 
     eval_kw = dict(env_kw, map_types=args.maps)
+
+    def ppo_policy(det):
+        if args.action_mode == "goto":
+            return GotoPPOPolicy(model, args.size, args.grid, args.horizon, det)
+        return PPOPolicy(model, det)
     t0, log, done = time.time(), [], 0
     chunk = max(args.steps // 8, args.n_envs * args.n_steps)
     while done < args.steps:
         model.learn(chunk, reset_num_timesteps=False)
         done += chunk
         model.save(os.path.join(args.out, "model"))
-        m = evaluate(PPOPolicy(model, True), range(2000, 2010), **eval_kw)
-        ms = evaluate(PPOPolicy(model, False), range(2000, 2010), **eval_kw)
+        m = evaluate(ppo_policy(True), range(2000, 2010), **eval_kw)
+        ms = evaluate(ppo_policy(False), range(2000, 2010), **eval_kw)
         row = dict(steps=done, minutes=round((time.time() - t0) / 60, 1),
                    **{k: float(np.mean(v)) for k, v in m.items()},
                    iou_stoch=float(np.mean(ms["iou"])), foci_found_stoch=float(np.mean(ms["foci_found"])))
         log.append(row)
         print(f"[{row['minutes']:5.1f} min] {done:8d} steps  IoU={row['iou']:.3f} (stoch {row['iou_stoch']:.3f})  "
               f"foci found={row['foci_found']:.2f} (stoch {row['foci_found_stoch']:.2f})  "
+              f"fire age={row['fire_age']:.0f}  dwell={row['dwell_frac']:.2f}  reversals={row['rev_frac']:.2f}  "
               f"hover={row['hover_frac']:.2f}  seen={row['seen_frac']:.2f}", flush=True)
     if args.steps > 0:
         model.save(os.path.join(args.out, "model"))
@@ -135,19 +191,21 @@ def main():
         kw = dict(final_kw, map_types=maps)
         final[split] = {name: evaluate(pol, seeds, **kw) for name, pol in
                         [("random", RandomPolicy()), ("lawnmower", Lawnmower()), ("greedy", Greedy()),
-                         ("ppo", PPOPolicy(model, True)), ("ppo_stoch", PPOPolicy(model, False))]}
+                         ("ppo", ppo_policy(True)), ("ppo_stoch", ppo_policy(False))]}
 
     lines = [f"Proof of concept, one drone, size {args.size}, fire advances every {args.fire_every} steps, "
              f"new fire rate {final_kw['new_rate']}, {args.eval_episodes} missions per cell (seeds {seeds[0]}-{seeds[-1]}), "
-             f"mean +- 95% interval. IoU = overlap of the drone's fire map with the real fire (higher is better).", ""]
+             f"mean +- 95% interval. IoU = overlap of the drone's fire map with the real fire (higher is better). "
+             f"Fire age = mean steps since the burning cells were last seen (lower is better). Revisit gap = steps "
+             f"between two looks at the same burning cell. Dwell = share of steps re-watching fire seen <= 5 steps "
+             f"ago. Reversals = share of moves that undo the previous move.", ""]
     for split, res in final.items():
         lines += [f"### {split}", "",
-                  "| Policy | IoU | Foci found | Focus latency (steps) | First fire (steps) | Hover | Map seen |",
-                  "| --- | --- | --- | --- | --- | --- | --- |"]
+                  "| Policy | " + " | ".join(HEADERS[k] for k in METRICS) + " |",
+                  "| --- " * (len(METRICS) + 1) + "|"]
         for name, r in res.items():
-            lines.append(f"| {name} | " + " | ".join(f"{np.mean(r[k]):.3f} +- {ci(r[k]):.3f}" if k in
-                         ("iou", "foci_found", "hover_frac", "seen_frac") else f"{np.mean(r[k]):.0f} +- {ci(r[k]):.0f}"
-                         for k in METRICS) + " |")
+            lines.append(f"| {name} | " + " | ".join(f"{np.mean(r[k]):.3f} +- {ci(r[k]):.3f}" if k in FRACTION
+                         else f"{np.mean(r[k]):.0f} +- {ci(r[k]):.0f}" for k in METRICS) + " |")
         lines += ["", "Paired IoU difference (PPO - baseline, same missions; positive = PPO better):", "",
                   "| Policy | vs random | vs lawnmower | vs greedy |", "| --- | --- | --- | --- |"]
         for name in ("ppo", "ppo_stoch"):
