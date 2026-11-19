@@ -40,6 +40,18 @@ v3 (preset "v3" in train_poc.py): reward for the AGE of the information the dron
   Optional "goto" actions (PoCEnv(action_mode="goto")): the drone picks one of GRID x GRID map sectors and
   flies to its centre for up to HORIZON steps before deciding again (commits to a trip, no mini jumps).
 
+v4 (preset "v4"): v3 + reversal penalty, plus a per-step cost for known fire that is being forgotten
+    r = v3 reward - W_FORGET * forgotten
+  forgotten (FORGET_MODE "mean") = mean over the cells of the drone's fire map of min(1, age / T_FORGET)
+  forgotten (FORGET_MODE "max")  = the same mean, but for the most forgotten separate fire (connected region),
+                                   following the "minimise the maximum revisit time" reward of persistent
+                                   surveillance (Bana et al. 2024)
+  The cost is paid at every step, also while the drone is elsewhere, so staying on one fire while another one
+  ages costs more and more, while following the only fire costs nothing. In addition the age reward of a fire
+  cell keeps growing up to T_FIRE = 60 steps (v3: 20), so a fire that was left long ago is worth more when it is
+  seen again (idleness that grows for many steps, as in non-homogeneous patrolling, Yanes Luis et al. 2025).
+  There is no direct penalty for staying on a fire: penalising the time spent in one place leads to oscillation.
+
 Evaluation (metrics(), the same for every policy):
     iou           mean acc over the episode (main metric, higher is better)
     t_first       steps until the first fire is in the drone's map (censored at max_steps)
@@ -51,11 +63,13 @@ Evaluation (metrics(), the same for every policy):
     dwell_frac    fraction of steps spent re-watching known fire seen <= 5 steps ago without learning anything
     revisit_gap   mean number of steps between two looks at the same burning cell (1 = watched all the time)
     rev_frac      fraction of moves that reverse the previous move (back-and-forth jitter)
+    forgotten     mean share of the drone's fire map not seen for more than T_FORGET (30) steps
+    oldest_fire   mean age of the most forgotten separate fire on the drone's map (steps, capped at 60)
 """
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, label
 
 from world import World, DIFFICULTY, MAP_TYPES
 
@@ -66,8 +80,11 @@ MOVE = 2
 N_, S_, E_, W_, HOVER = range(5)
 MOVES = {N_: (0, -1), S_: (0, 1), E_: (1, 0), W_: (-1, 0), HOVER: (0, 0)}
 DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0, exp_floor=0.0, stale=0.0,
-                 age=0.0, fire_mult=10.0, t_fire=20.0, t_empty=60.0, rev=0.0)
+                 age=0.0, fire_mult=10.0, t_fire=20.0, t_empty=60.0, rev=0.0,
+                 forget=0.0, forget_mode="mean", t_forget=30.0)
 V3_W = dict(acc=0.3, fix=1.0, exp=0.0, age=1.0, stale=1.0)       # changes on top of DEFAULT_W for preset v3
+V4_W = dict(V3_W, rev=0.1, t_fire=60.0, forget=0.5)               # changes on top of DEFAULT_W for preset v4
+EIGHT = np.ones((3, 3), dtype=int)                                # 8-connectivity for separate fire regions
 DWELL_AGE = 5
 FOCUS_D = 10                              # cells: a new fire farther than this from existing fire is a new focus
 AGE_CAP = 60
@@ -108,6 +125,7 @@ class PoCCore:
         self.prev_dir, self.moves, self.reversals = None, 0, 0
         self.dwell, self.gap_sum, self.gap_n = 0, 0.0, 0
         self.fire_age_sum, self.fire_steps = 0.0, 0
+        self.forgot_sum, self.oldest_sum, self.known_steps = 0.0, 0.0, 0
         self._fire_acc = 0.0
         self.t_first = None
         self.last_reward = {}
@@ -204,15 +222,34 @@ class PoCCore:
         if w.burning.any():
             self.fire_age_sum += float(np.minimum(AGE_CAP, self.t - self.last_seen[w.burning]).mean())
             self.fire_steps += 1
+        forgotten = self._forgotten()
         z = max(float(w.burning.sum()), wt["z_min"])
         gate = wt["exp_floor"] + (1.0 - wt["exp_floor"]) * (1.0 - acc)
-        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty, age=age_r, rev=float(reversed_))
+        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty, age=age_r, rev=float(reversed_), forget=forgotten)
         r = (wt["acc"] * parts["acc"] + wt["fix"] * parts["fix"] + wt["exp"] * parts["exp"]
-             + wt["age"] * parts["age"] - wt["rev"] * parts["rev"])
+             + wt["age"] * parts["age"] - wt["rev"] * parts["rev"] - wt["forget"] * parts["forget"])
         self.acc_sum += acc
         self.last_reward = parts
         done = self.t >= self.max_steps
         return r, done, parts
+
+    def _forgotten(self):
+        """Cost of the known fire that is being forgotten (also records the forgotten / oldest_fire metrics)."""
+        wt = self.w
+        if not self.B.any():
+            return 0.0
+        age = np.minimum(AGE_CAP, self.t - self.last_seen[self.B]).astype(float)
+        self.forgot_sum += float((age > wt["t_forget"]).mean())
+        lab, k = label(self.B, structure=EIGHT)
+        ids = lab[self.B]
+        region_age = np.bincount(ids, weights=age, minlength=k + 1)[1:] / np.maximum(np.bincount(ids, minlength=k + 1)[1:], 1)
+        self.oldest_sum += float(region_age.max())
+        self.known_steps += 1
+        if not wt["forget"]:
+            return 0.0
+        if wt["forget_mode"] == "max":
+            return float(min(1.0, region_age.max() / wt["t_forget"]))
+        return float(np.minimum(1.0, age / wt["t_forget"]).mean())
 
     # ------------------------------------------------------------------ observation
     def _crop(self, a, fill=0.0):
@@ -252,7 +289,9 @@ class PoCCore:
                     fire_age=self.fire_age_sum / self.fire_steps if self.fire_steps else 0.0,
                     dwell_frac=self.dwell / T,
                     revisit_gap=self.gap_sum / self.gap_n if self.gap_n else float(AGE_CAP),
-                    rev_frac=self.reversals / max(self.moves, 1))
+                    rev_frac=self.reversals / max(self.moves, 1),
+                    forgotten=self.forgot_sum / self.known_steps if self.known_steps else 0.0,
+                    oldest_fire=self.oldest_sum / self.known_steps if self.known_steps else 0.0)
 
 
 class Goto:

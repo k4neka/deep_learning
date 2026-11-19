@@ -11,6 +11,9 @@ Version 3 (reward for the age of the information, see poc.py), one curriculum pe
     python train_poc.py --preset v3 --action-mode goto --steps 300000 --fire-every 4 --out runs/v3_goto_fe4
                                                                                              # + 'fly to a sector'
     (with goto, --steps counts decisions; one decision is up to --horizon drone steps)
+Version 4 (v3 + reversal penalty + a per-step cost for known fire that is being forgotten, see poc.py):
+    python train_poc.py --preset v4 --fire-every 4 --out runs/v4_mean_fe4                    # mean forgotten fire
+    python train_poc.py --preset v4 --forget-mode max --fire-every 4 --out runs/v4_max_fe4   # most forgotten fire
 Evaluate a saved model only:
     python train_poc.py --steps 0 --init-from runs/poc_fe4/model.zip --fire-every 4 --out runs/poc_fe4_eval
 
@@ -24,18 +27,18 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
-from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, Goto, evaluate, MAP_TYPES, DEFAULT_W, V3_W
+from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, Goto, evaluate, MAP_TYPES, DEFAULT_W, V3_W, V4_W
 from train_ppo import SmallCNN
 
 # torch >= 2.15 cannot read straight from the zip stream that SB3 passes; read it into memory first (harmless)
 _orig_load = torch.load
 torch.load = lambda f, *a, **k: _orig_load(io.BytesIO(f.read()) if hasattr(f, "read") and not isinstance(f, io.BytesIO) else f, *a, **k)
 
-METRICS = ["iou", "foci_found", "foci_latency", "t_first", "fire_age", "revisit_gap", "dwell_frac", "rev_frac",
-           "hover_frac", "seen_frac"]
-FRACTION = ("iou", "foci_found", "dwell_frac", "rev_frac", "hover_frac", "seen_frac")
+METRICS = ["iou", "foci_found", "foci_latency", "t_first", "fire_age", "oldest_fire", "forgotten", "revisit_gap",
+           "dwell_frac", "rev_frac", "hover_frac", "seen_frac"]
+FRACTION = ("iou", "foci_found", "forgotten", "dwell_frac", "rev_frac", "hover_frac", "seen_frac")
 HEADERS = dict(iou="IoU", foci_found="Foci found", foci_latency="Focus latency", t_first="First fire",
-               fire_age="Fire age", revisit_gap="Revisit gap", dwell_frac="Dwell", rev_frac="Reversals",
+               fire_age="Fire age", oldest_fire="Oldest fire", forgotten="Forgotten", revisit_gap="Revisit gap", dwell_frac="Dwell", rev_frac="Reversals",
                hover_frac="Hover", seen_frac="Map seen")
 
 
@@ -90,9 +93,10 @@ def main():
     ap.add_argument("--new-rate", type=float, default=0.01, help="chance of a new fire per fire step")
     ap.add_argument("--maps", default="rolling_hills,mountain_valley,dense_forest,farmland")
     ap.add_argument("--test-maps", default="lake_shore,urban_interface")
-    ap.add_argument("--preset", choices=["v1", "v3"], default="v1",
+    ap.add_argument("--preset", choices=["v1", "v3", "v4"], default="v1",
                     help="v1: IoU + corrections + exploration (v2 = v1 with --stale --exp-floor 0.3); "
-                         "v3: IoU (0.3) + corrections + age of the refreshed information")
+                         "v3: IoU (0.3) + corrections + age of the refreshed information; "
+                         "v4: v3 + reversal penalty 0.1 + cost of forgotten known fire, age reward up to 60 steps")
     ap.add_argument("--w-acc", type=float, default=None)
     ap.add_argument("--w-fix", type=float, default=None)
     ap.add_argument("--w-exp", type=float, default=None)
@@ -101,6 +105,10 @@ def main():
     ap.add_argument("--t-fire", type=float, default=None, help="v3: steps after which a fire cell is fully worth checking again")
     ap.add_argument("--t-empty", type=float, default=None, help="v3: same for a cell without fire")
     ap.add_argument("--w-rev", type=float, default=None, help="penalty for reversing the previous move")
+    ap.add_argument("--w-forget", type=float, default=None, help="v4: per-step cost of forgotten known fire")
+    ap.add_argument("--forget-mode", choices=["mean", "max"], default=None,
+                    help="v4: cost of the whole fire map (mean) or of the most forgotten separate fire (max)")
+    ap.add_argument("--t-forget", type=float, default=None, help="v4: steps after which known fire counts as forgotten")
     ap.add_argument("--action-mode", choices=["primitive", "goto"], default="primitive")
     ap.add_argument("--grid", type=int, default=8, help="goto: the map is split into grid x grid sectors")
     ap.add_argument("--horizon", type=int, default=8, help="goto: maximum drone steps per decision")
@@ -123,13 +131,14 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cores = len(os.sched_getaffinity(0))
     torch.set_num_threads(max(1, min(4, cores)))
-    weights = dict(DEFAULT_W, **(V3_W if args.preset == "v3" else {}))
+    weights = dict(DEFAULT_W, **{"v1": {}, "v3": V3_W, "v4": V4_W}[args.preset])
     weights.update(exp_floor=args.exp_floor)
     if args.stale:
         weights["stale"] = 1.0
     for key, val in [("acc", args.w_acc), ("fix", args.w_fix), ("exp", args.w_exp), ("age", args.w_age),
                      ("fire_mult", args.fire_mult), ("t_fire", args.t_fire), ("t_empty", args.t_empty),
-                     ("rev", args.w_rev), ("beta", args.beta)]:
+                     ("rev", args.w_rev), ("beta", args.beta), ("forget", args.w_forget),
+                     ("forget_mode", args.forget_mode), ("t_forget", args.t_forget)]:
         if val is not None:
             weights[key] = val
     env_kw = dict(size=args.size, max_steps=args.max_steps, fire_every=args.fire_every, new_rate=args.new_rate,
@@ -177,7 +186,8 @@ def main():
         log.append(row)
         print(f"[{row['minutes']:5.1f} min] {done:8d} steps  IoU={row['iou']:.3f} (stoch {row['iou_stoch']:.3f})  "
               f"foci found={row['foci_found']:.2f} (stoch {row['foci_found_stoch']:.2f})  "
-              f"fire age={row['fire_age']:.0f}  dwell={row['dwell_frac']:.2f}  reversals={row['rev_frac']:.2f}  "
+              f"fire age={row['fire_age']:.0f}  oldest fire={row['oldest_fire']:.0f}  "
+              f"forgotten={row['forgotten']:.2f}  dwell={row['dwell_frac']:.2f}  reversals={row['rev_frac']:.2f}  "
               f"hover={row['hover_frac']:.2f}  seen={row['seen_frac']:.2f}", flush=True)
     if args.steps > 0:
         model.save(os.path.join(args.out, "model"))
@@ -197,7 +207,8 @@ def main():
              f"new fire rate {final_kw['new_rate']}, {args.eval_episodes} missions per cell (seeds {seeds[0]}-{seeds[-1]}), "
              f"mean +- 95% interval. IoU = overlap of the drone's fire map with the real fire (higher is better). "
              f"Fire age = mean steps since the burning cells were last seen (lower is better). Revisit gap = steps "
-             f"between two looks at the same burning cell. Dwell = share of steps re-watching fire seen <= 5 steps "
+             f"between two looks at the same burning cell. Oldest fire = age of the most forgotten separate fire on "
+             f"the drone's map. Forgotten = share of the drone's fire map not seen for more than 30 steps. Dwell = share of steps re-watching fire seen <= 5 steps "
              f"ago. Reversals = share of moves that undo the previous move.", ""]
     for split, res in final.items():
         lines += [f"### {split}", "",
