@@ -52,6 +52,25 @@ v4 (preset "v4"): v3 + reversal penalty, plus a per-step cost for known fire tha
   seen again (idleness that grows for many steps, as in non-homogeneous patrolling, Yanes Luis et al. 2025).
   There is no direct penalty for staying on a fire: penalising the time spent in one place leads to oscillation.
 
+v5 (preset "v5", PoCCore(altitude=True)): v4 with the w1 weights (forget cost 1.0) plus ALTITUDE and HEAT DAMAGE
+  Actions: N, S, E, W, hover, up, down. Three altitudes, with the view and sensor of the full environment:
+      altitude   view            sensor (per cell)                       refresh quality Q
+      low        7 x 7 cells     perfect                                 1.0
+      medium     15 x 15 cells   misses fire 5 %, false alarm 0.2 %       0.8
+      high       31 x 31 cells   misses fire 15 %, false alarm 0.4 %      0.4
+  The drone's map takes what the sensor reports, so flying high fills the map faster but with errors, which
+  lowers the IoU. A look of quality Q only removes a share Q of a cell's age (a high look does not count as a
+  full check) and its age reward is multiplied by Q: per cell watched, a high look is worth 0.4 of a low one.
+  High altitude still pays more for scanning empty land (4x more cells), medium pays more for keeping the
+  fire itself up to date. The corrections term only pays for cells whose map entry becomes RIGHT and charges the cells
+  that become WRONG, and the bonus for a new focus far from known fire is paid only the first time a burning
+  cell is detected, so re-finding a cell that a sensor error had removed nets zero: noise cannot be farmed.
+  Heat: at low altitude, if any cell within 1 of the drone burns with intensity above HEAT (0.7) the drone
+  takes damage DMG_RATE * intensity per step (0.25 -> lost after about 4 steps over intense fire). Reward
+  -W_DMG * damage, and -W_LOSS when it is lost. A lost drone ends the training episode; in evaluation the fire
+  keeps burning until the end of the mission and the drone's map just gets older.
+  Medium and high altitude are safe. Start at medium altitude. Observation: + altitude and health channels.
+
 Evaluation (metrics(), the same for every policy):
     iou           mean acc over the episode (main metric, higher is better)
     t_first       steps until the first fire is in the drone's map (censored at max_steps)
@@ -65,6 +84,9 @@ Evaluation (metrics(), the same for every policy):
     rev_frac      fraction of moves that reverse the previous move (back-and-forth jitter)
     forgotten     mean share of the drone's fire map not seen for more than T_FORGET (30) steps
     oldest_fire   mean age of the most forgotten separate fire on the drone's map (steps, capped at 60)
+    alt_low / alt_med / alt_high   share of steps at each altitude (altitude mode only)
+    damage        total heat damage taken (1 = one drone's worth)
+    lost          1 if the drone was lost to heat, else 0
 """
 import numpy as np
 import gymnasium as gym
@@ -81,11 +103,20 @@ N_, S_, E_, W_, HOVER = range(5)
 MOVES = {N_: (0, -1), S_: (0, 1), E_: (1, 0), W_: (-1, 0), HOVER: (0, 0)}
 DEFAULT_W = dict(acc=1.0, fix=1.0, exp=0.5, beta=3.0, d=10.0, z_min=10.0, exp_floor=0.0, stale=0.0,
                  age=0.0, fire_mult=10.0, t_fire=20.0, t_empty=60.0, rev=0.0,
-                 forget=0.0, forget_mode="mean", t_forget=30.0)
+                 forget=0.0, forget_mode="mean", t_forget=30.0, dmg=0.0, loss=0.0)
 V3_W = dict(acc=0.3, fix=1.0, exp=0.0, age=1.0, stale=1.0)       # changes on top of DEFAULT_W for preset v3
 V4_W = dict(V3_W, rev=0.1, t_fire=60.0, forget=0.5)               # changes on top of DEFAULT_W for preset v4
+V5_W = dict(V4_W, forget=1.0, dmg=1.0, loss=5.0)                  # v4 w1 + heat damage, for preset v5
 EIGHT = np.ones((3, 3), dtype=int)                                # 8-connectivity for separate fire regions
 DWELL_AGE = 5
+# altitude mode (values of the full environment, env.py): low, medium, high
+R_ALT = [3, 7, 15]
+MISS_ALT = [0.0, 0.05, 0.15]
+FA_ALT = [0.0, 0.002, 0.004]
+Q_ALT = [1.0, 0.8, 0.4]
+HEAT = 0.7                                # intensity above which low flight damages the drone
+DMG_RATE = 0.25                           # damage per step = DMG_RATE * intensity (health starts at 1)
+UP, DOWN = 5, 6
 FOCUS_D = 10                              # cells: a new fire farther than this from existing fire is a new focus
 AGE_CAP = 60
 
@@ -98,8 +129,11 @@ def _as_list(x, allowed):
 
 class PoCCore:
     def __init__(self, size=64, max_steps=300, fire_every=4, new_rate=0.01, map_types="all", weights=None,
-                 fire_model="native"):
+                 fire_model="native", altitude=False, end_on_loss=False):
         assert size % OBS == 0
+        self.altitude, self.end_on_loss = altitude, end_on_loss
+        self.n_ch = N_CH + (2 if altitude else 0)
+        self.n_actions = 7 if altitude else 5
         self.size, self.max_steps, self.fire_every, self.new_rate = size, max_steps, fire_every, new_rate
         self.map_types = _as_list(map_types, MAP_TYPES)
         self.w = {**DEFAULT_W, **(weights or {})}
@@ -116,9 +150,10 @@ class PoCCore:
         self.t = 0
         self.pos = np.array([n // 2, n - 2])                 # x, y: bottom middle
         self.B = np.zeros((n, n), dtype=bool)                # believed burning
+        self.det_ever = np.zeros((n, n), dtype=bool)         # burning cells correctly detected at least once
         self.burnt_known = np.zeros((n, n), dtype=bool)
         self.seen = np.zeros((n, n), dtype=bool)
-        self.last_seen = np.full((n, n), -10 ** 6)
+        self.last_seen = np.full((n, n), -10 ** 6, dtype=float)
         self.F_ever = w.burning.copy()
         self.foci = [[int(y), int(x), 0, -1] for y, x in np.argwhere(w.burning)]   # y, x, t_start, t_seen
         self.acc_sum, self.hover = 0.0, 0
@@ -126,6 +161,10 @@ class PoCCore:
         self.dwell, self.gap_sum, self.gap_n = 0, 0.0, 0
         self.fire_age_sum, self.fire_steps = 0.0, 0
         self.forgot_sum, self.oldest_sum, self.known_steps = 0.0, 0.0, 0
+        self.alt, self.health, self.alive = 1, 1.0, True
+        self.alt_steps = np.zeros(3)
+        self.damage_sum = 0.0
+        self.sense_rng = np.random.default_rng(None if seed is None else seed + 1_000_003)   # sensor noise only
         self._fire_acc = 0.0
         self.t_first = None
         self.last_reward = {}
@@ -137,10 +176,13 @@ class PoCCore:
         union = (self.B | F).sum()
         return 1.0 if union == 0 else float((self.B & F).sum() / union)
 
+    def radius(self):
+        return R_ALT[self.alt] if self.altitude else R
+
     def _window(self):
         x, y = self.pos
-        n = self.size
-        return max(0, y - R), min(n, y + R + 1), max(0, x - R), min(n, x + R + 1)
+        n, r = self.size, self.radius()
+        return max(0, y - r), min(n, y + r + 1), max(0, x - r), min(n, x + r + 1)
 
     def _sense(self):
         """The drone looks. Returns (corrected-cell mass, novelty of the view (v1/v2), age reward of the view (v3),
@@ -150,34 +192,47 @@ class PoCCore:
         F = w.burning[y0:y1, x0:x1]
         Bw = self.B[y0:y1, x0:x1]
         age = (self.t - self.last_seen[y0:y1, x0:x1]).astype(float)
-        changed = Bw != F
+        if self.altitude and self.alt > 0:                         # noisy sensor at medium / high altitude
+            u = self.sense_rng.random(F.shape)
+            obs = np.where(F, u >= MISS_ALT[self.alt], u < FA_ALT[self.alt])
+        else:
+            obs = F
+        q = Q_ALT[self.alt] if self.altitude else 1.0
+        changed = Bw != obs
         fix = 0.0
         if changed.any():
-            new_fire = changed & F
-            fix = float((changed & ~F).sum())                      # fire that went out
-            if new_fire.any():
+            improve = (obs == F) & (Bw != F)                       # map entry becomes right
+            worsen = (obs != F) & (Bw == F)                        # map entry becomes wrong (sensor error)
+            wgt = np.ones(F.shape)
+            hot = improve & F & ~self.det_ever[y0:y1, x0:x1]       # first detection of a burning cell: focus bonus
+            if hot.any():
                 if self.B.any():
-                    d = distance_transform_edt(~self.B)[y0:y1, x0:x1][new_fire]
+                    d = distance_transform_edt(~self.B)[y0:y1, x0:x1][hot]
                 else:
-                    d = np.full(int(new_fire.sum()), wt["d"])
-                fix += float((1.0 + wt["beta"] * np.minimum(1.0, d / wt["d"])).sum())
+                    d = np.full(int(hot.sum()), wt["d"])
+                wgt[hot] = 1.0 + wt["beta"] * np.minimum(1.0, d / wt["d"])
+            fix = float(wgt[improve].sum() - wgt[worsen].sum())
         if wt["stale"]:
             novelty = float(np.minimum(1.0, age / AGE_CAP).mean())
         else:
             novelty = float((~self.seen[y0:y1, x0:x1]).mean())
         fireish = F | Bw
         z = max(float(w.burning.sum()), wt["z_min"])
-        age_r = float(wt["fire_mult"] * np.minimum(1.0, age[fireish] / wt["t_fire"]).sum() / z
-                      + np.minimum(1.0, age[~fireish] / wt["t_empty"]).sum() / (2 * R + 1) ** 2)
+        age_c = np.minimum(age, AGE_CAP)
+        age_new = (1.0 - q) * age_c                                # a look of quality q removes a share q of the age
+        gain = lambda T, m: np.minimum(1.0, age_c[m] / T) - np.minimum(1.0, age_new[m] / T)
+        age_r = q * float(wt["fire_mult"] * gain(wt["t_fire"], fireish).sum() / z
+                          + gain(wt["t_empty"], ~fireish).sum() / (2 * R + 1) ** 2)
         known = F & Bw & self.seen[y0:y1, x0:x1]                  # burning cells already known and looked at again
         dwell = bool((known & (age <= DWELL_AGE)).any()) and not changed.any()
         g = age[known]
         self.gap_sum += float(np.minimum(g, AGE_CAP).sum())
         self.gap_n += int(g.size)
-        self.B[y0:y1, x0:x1] = F
+        self.B[y0:y1, x0:x1] = obs
+        self.det_ever[y0:y1, x0:x1] |= obs & F
         self.burnt_known[y0:y1, x0:x1] = w.burnt[y0:y1, x0:x1]
         self.seen[y0:y1, x0:x1] = True
-        self.last_seen[y0:y1, x0:x1] = self.t
+        self.last_seen[y0:y1, x0:x1] = self.t - age_new
         if self.t_first is None and self.B.any():
             self.t_first = self.t
         for f in self.foci:                                        # focus point inside the view
@@ -197,10 +252,17 @@ class PoCCore:
 
     def step(self, action):
         w, wt, n = self.world, self.w, self.size
-        dx, dy = MOVES[int(action)]
-        old = self.pos.copy()
-        self.pos = np.clip(self.pos + MOVE * np.array([dx, dy]), 0, n - 1)
-        self.hover += int((self.pos == old).all())
+        action = int(action)
+        if not self.alive:                                         # lost drone (evaluation): the fire goes on
+            action = HOVER
+        if action in (UP, DOWN):
+            self.alt = int(np.clip(self.alt + (1 if action == UP else -1), 0, 2))
+            dx, dy = 0, 0
+        else:
+            dx, dy = MOVES[action]
+            old = self.pos.copy()
+            self.pos = np.clip(self.pos + MOVE * np.array([dx, dy]), 0, n - 1)
+            self.hover += int((self.pos == old).all())
         reversed_ = 0
         if (dx, dy) != (0, 0):
             self.moves += 1
@@ -216,7 +278,21 @@ class PoCCore:
             w.step()
             self.F_ever |= w.burning
             self._track_foci(before)
-        fix, novelty, age_r, dwell = self._sense()
+        dmg, lost = 0.0, 0
+        if self.alive:
+            self.alt_steps[self.alt] += 1
+            fix, novelty, age_r, dwell = self._sense()
+            if self.altitude and self.alt == 0:                    # heat at low altitude
+                x, y = self.pos
+                heat = (w.intensity * w.burning)[max(0, y - 1):y + 2, max(0, x - 1):x + 2].max()
+                if heat > HEAT:
+                    dmg = min(self.health, DMG_RATE * float(heat))
+                    self.health -= dmg
+                    self.damage_sum += dmg
+                    if self.health <= 1e-9:
+                        self.alive, lost = False, 1
+        else:
+            fix, novelty, age_r, dwell = 0.0, 0.0, 0.0, False
         self.dwell += int(dwell)
         acc = self.acc()
         if w.burning.any():
@@ -225,12 +301,14 @@ class PoCCore:
         forgotten = self._forgotten()
         z = max(float(w.burning.sum()), wt["z_min"])
         gate = wt["exp_floor"] + (1.0 - wt["exp_floor"]) * (1.0 - acc)
-        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty, age=age_r, rev=float(reversed_), forget=forgotten)
+        parts = dict(acc=acc, fix=fix / z, exp=gate * novelty, age=age_r, rev=float(reversed_), forget=forgotten,
+                     dmg=dmg, loss=float(lost))
         r = (wt["acc"] * parts["acc"] + wt["fix"] * parts["fix"] + wt["exp"] * parts["exp"]
-             + wt["age"] * parts["age"] - wt["rev"] * parts["rev"] - wt["forget"] * parts["forget"])
+             + wt["age"] * parts["age"] - wt["rev"] * parts["rev"] - wt["forget"] * parts["forget"]
+             - wt["dmg"] * parts["dmg"] - wt["loss"] * parts["loss"])
         self.acc_sum += acc
         self.last_reward = parts
-        done = self.t >= self.max_steps
+        done = self.t >= self.max_steps or (lost and self.end_on_loss)
         return r, done, parts
 
     def _forgotten(self):
@@ -262,7 +340,7 @@ class PoCCore:
         n = self.size
         f = n // OBS
         age = np.minimum(1.0, (self.t - self.last_seen) / AGE_CAP).astype(np.float32)
-        o = np.empty((N_CH, OBS, OBS), dtype=np.float32)
+        o = np.empty((self.n_ch, OBS, OBS), dtype=np.float32)
         o[0] = self._crop(self.B.astype(np.float32))
         o[1] = self._crop(age, fill=1.0)
         o[2] = self._crop(self.burnt_known.astype(np.float32))
@@ -274,6 +352,9 @@ class PoCCore:
         o[6] = pool((~self.seen).astype(np.float32), "mean")
         o[7] = 0.0
         o[7, min(OBS - 1, self.pos[1] // f), min(OBS - 1, self.pos[0] // f)] = 1.0
+        if self.altitude:
+            o[8] = self.alt / 2.0
+            o[9] = self.health
         return o
 
     def metrics(self):
@@ -291,7 +372,9 @@ class PoCCore:
                     revisit_gap=self.gap_sum / self.gap_n if self.gap_n else float(AGE_CAP),
                     rev_frac=self.reversals / max(self.moves, 1),
                     forgotten=self.forgot_sum / self.known_steps if self.known_steps else 0.0,
-                    oldest_fire=self.oldest_sum / self.known_steps if self.known_steps else 0.0)
+                    oldest_fire=self.oldest_sum / self.known_steps if self.known_steps else 0.0,
+                    alt_low=self.alt_steps[0] / T, alt_med=self.alt_steps[1] / T, alt_high=self.alt_steps[2] / T,
+                    damage=self.damage_sum, lost=float(not self.alive))
 
 
 class Goto:
@@ -333,16 +416,17 @@ class PoCEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, size=64, max_steps=300, fire_every=4, new_rate=0.01, map_types="all", weights=None,
-                 action_mode="primitive", grid=8, horizon=8):
+                 action_mode="primitive", grid=8, horizon=8, altitude=False):
         self.core = PoCCore(size=size, max_steps=max_steps, fire_every=fire_every, new_rate=new_rate,
-                            map_types=map_types, weights=weights)
-        self.observation_space = spaces.Box(0.0, 1.0, shape=(N_CH, OBS, OBS), dtype=np.float32)
+                            map_types=map_types, weights=weights, altitude=altitude, end_on_loss=True)
+        assert not (altitude and action_mode == "goto"), "goto actions are not combined with altitude"
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(self.core.n_ch, OBS, OBS), dtype=np.float32)
         self.action_mode = action_mode
         if action_mode == "goto":
             self.goto = Goto(size, grid, horizon)
             self.action_space = spaces.Discrete(grid * grid)
         else:
-            self.action_space = spaces.Discrete(5)
+            self.action_space = spaces.Discrete(self.core.n_actions)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -386,7 +470,7 @@ class RandomPolicy:
         self.rng = np.random.default_rng(12345)
 
     def act(self, core):
-        return int(self.rng.integers(5))
+        return int(self.rng.integers(core.n_actions))
 
 
 class Lawnmower:

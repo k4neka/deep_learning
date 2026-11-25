@@ -5,8 +5,7 @@
 # Evaluation missions are the same as before (seeds 5000-5029), so all results are paired and comparable.
 #
 # Run from wildfire_kit_v4 on the VSC login node:
-#     bash jobs/poc_v4_tune.sh                # everything (13 jobs, about 1 h each, 'long' about 2.5 h)
-#     bash jobs/poc_v4_tune.sh w1 t20         # only some variants
+#     bash jobs/poc_v4_tune.sh w1s1 w1s2      # the variants to run (names below; at least one is required)
 #
 # Variants:
 #   w1    v4 mean with the cost of forgotten fire doubled (0.5 -> 1.0)          fire every 4 -> 2 -> 1
@@ -14,9 +13,12 @@
 #   long  runs/v4_mean_fe1 trained 4 M more steps at full fire speed           fire every 1
 #   s1    v4 mean again with training seed 1                                    fire every 4 -> 2 -> 1
 #   s2    v4 mean again with training seed 2                                    fire every 4 -> 2 -> 1
+#   w1s1  w1 again with training seed 1 (to confirm w1, added 25 Nov)          fire every 4 -> 2 -> 1
+#   w1s2  w1 again with training seed 2                                         fire every 4 -> 2 -> 1
 set -e
 cd "$(dirname "$0")/.."
-VARIANTS=${@:-w1 t20 long s1 s2}
+VARIANTS="$*"
+[ -n "$VARIANTS" ] || { echo "usage: bash jobs/poc_v4_tune.sh VARIANT... (w1 t20 long s1 s2 w1s1 w1s2)" >&2; exit 1; }
 COMMON="--preset v4 --forget-mode mean --new-rate 0.03 --eval-new-rate 0.01 --subproc"
 
 submit() {   # submit NAME DEPENDENCY ARGS...  -> prints the job id, stops the script if sbatch refuses
@@ -51,6 +53,8 @@ for v in $VARIANTS; do
         t20)  chain t20 "--t-forget 20" ;;
         s1)   chain mean_s1 "--seed 1" ;;
         s2)   chain mean_s2 "--seed 2" ;;
+        w1s1) chain w1_s1 "--w-forget 1.0 --seed 1" ;;
+        w1s2) chain w1_s2 "--w-forget 1.0 --seed 2" ;;
         long)
             [ -f runs/v4_mean_fe1/model.zip ] || { echo "missing runs/v4_mean_fe1/model.zip" >&2; exit 1; }
             j=$(submit "v4_mean_fe1_long" "" --fire-every 1 --steps 4000000 --init-from runs/v4_mean_fe1/model.zip \

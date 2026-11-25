@@ -14,6 +14,8 @@ Version 3 (reward for the age of the information, see poc.py), one curriculum pe
 Version 4 (v3 + reversal penalty + a per-step cost for known fire that is being forgotten, see poc.py):
     python train_poc.py --preset v4 --fire-every 4 --out runs/v4_mean_fe4                    # mean forgotten fire
     python train_poc.py --preset v4 --forget-mode max --fire-every 4 --out runs/v4_max_fe4   # most forgotten fire
+Version 5 (v4 w1 + altitude: up/down actions, noisier sensor higher up, heat damage when low over fire):
+    python train_poc.py --preset v5 --fire-every 4 --out runs/v5_fe4
 Evaluate a saved model only:
     python train_poc.py --steps 0 --init-from runs/poc_fe4/model.zip --fire-every 4 --out runs/poc_fe4_eval
 
@@ -27,7 +29,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
-from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, Goto, evaluate, MAP_TYPES, DEFAULT_W, V3_W, V4_W
+from poc import PoCEnv, RandomPolicy, Lawnmower, Greedy, Goto, evaluate, MAP_TYPES, DEFAULT_W, V3_W, V4_W, V5_W
 from train_ppo import SmallCNN
 
 # torch >= 2.15 cannot read straight from the zip stream that SB3 passes; read it into memory first (harmless)
@@ -36,10 +38,13 @@ torch.load = lambda f, *a, **k: _orig_load(io.BytesIO(f.read()) if hasattr(f, "r
 
 METRICS = ["iou", "foci_found", "foci_latency", "t_first", "fire_age", "oldest_fire", "forgotten", "revisit_gap",
            "dwell_frac", "rev_frac", "hover_frac", "seen_frac"]
-FRACTION = ("iou", "foci_found", "forgotten", "dwell_frac", "rev_frac", "hover_frac", "seen_frac")
+ALT_METRICS = ["alt_low", "alt_med", "alt_high", "damage", "lost"]
+FRACTION = ("iou", "foci_found", "forgotten", "dwell_frac", "rev_frac", "hover_frac", "seen_frac",
+            "alt_low", "alt_med", "alt_high", "damage", "lost")
 HEADERS = dict(iou="IoU", foci_found="Foci found", foci_latency="Focus latency", t_first="First fire",
                fire_age="Fire age", oldest_fire="Oldest fire", forgotten="Forgotten", revisit_gap="Revisit gap", dwell_frac="Dwell", rev_frac="Reversals",
-               hover_frac="Hover", seen_frac="Map seen")
+               hover_frac="Hover", seen_frac="Map seen", alt_low="Low", alt_med="Medium", alt_high="High",
+               damage="Damage", lost="Lost")
 
 
 class PPOPolicy:
@@ -93,10 +98,11 @@ def main():
     ap.add_argument("--new-rate", type=float, default=0.01, help="chance of a new fire per fire step")
     ap.add_argument("--maps", default="rolling_hills,mountain_valley,dense_forest,farmland")
     ap.add_argument("--test-maps", default="lake_shore,urban_interface")
-    ap.add_argument("--preset", choices=["v1", "v3", "v4"], default="v1",
+    ap.add_argument("--preset", choices=["v1", "v3", "v4", "v5"], default="v1",
                     help="v1: IoU + corrections + exploration (v2 = v1 with --stale --exp-floor 0.3); "
                          "v3: IoU (0.3) + corrections + age of the refreshed information; "
-                         "v4: v3 + reversal penalty 0.1 + cost of forgotten known fire, age reward up to 60 steps")
+                         "v4: v3 + reversal penalty 0.1 + cost of forgotten known fire, age reward up to 60 steps; "
+                         "v5: v4 with forget cost 1.0 + altitude (up/down, noisy sensor higher up) + heat damage")
     ap.add_argument("--w-acc", type=float, default=None)
     ap.add_argument("--w-fix", type=float, default=None)
     ap.add_argument("--w-exp", type=float, default=None)
@@ -109,6 +115,9 @@ def main():
     ap.add_argument("--forget-mode", choices=["mean", "max"], default=None,
                     help="v4: cost of the whole fire map (mean) or of the most forgotten separate fire (max)")
     ap.add_argument("--t-forget", type=float, default=None, help="v4: steps after which known fire counts as forgotten")
+    ap.add_argument("--altitude", action="store_true", help="altitude actions, noisy sensor, heat damage (on in v5)")
+    ap.add_argument("--w-dmg", type=float, default=None, help="v5: penalty per unit of heat damage")
+    ap.add_argument("--w-loss", type=float, default=None, help="v5: penalty when the drone is lost")
     ap.add_argument("--action-mode", choices=["primitive", "goto"], default="primitive")
     ap.add_argument("--grid", type=int, default=8, help="goto: the map is split into grid x grid sectors")
     ap.add_argument("--horizon", type=int, default=8, help="goto: maximum drone steps per decision")
@@ -131,18 +140,22 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cores = len(os.sched_getaffinity(0))
     torch.set_num_threads(max(1, min(4, cores)))
-    weights = dict(DEFAULT_W, **{"v1": {}, "v3": V3_W, "v4": V4_W}[args.preset])
+    weights = dict(DEFAULT_W, **{"v1": {}, "v3": V3_W, "v4": V4_W, "v5": V5_W}[args.preset])
+    if args.preset == "v5":
+        args.altitude = True
     weights.update(exp_floor=args.exp_floor)
     if args.stale:
         weights["stale"] = 1.0
     for key, val in [("acc", args.w_acc), ("fix", args.w_fix), ("exp", args.w_exp), ("age", args.w_age),
                      ("fire_mult", args.fire_mult), ("t_fire", args.t_fire), ("t_empty", args.t_empty),
                      ("rev", args.w_rev), ("beta", args.beta), ("forget", args.w_forget),
-                     ("forget_mode", args.forget_mode), ("t_forget", args.t_forget)]:
+                     ("forget_mode", args.forget_mode), ("t_forget", args.t_forget), ("dmg", args.w_dmg),
+                     ("loss", args.w_loss)]:
         if val is not None:
             weights[key] = val
     env_kw = dict(size=args.size, max_steps=args.max_steps, fire_every=args.fire_every, new_rate=args.new_rate,
-                  weights=weights)
+                  weights=weights, altitude=args.altitude)
+    metrics = METRICS + (ALT_METRICS if args.altitude else [])
     act_kw = dict(action_mode=args.action_mode, grid=args.grid, horizon=args.horizon)
     print(f"PoC | size {args.size} | fire every {args.fire_every} steps | new fire rate {args.new_rate} | "
           f"actions {args.action_mode} | weights {weights} | envs {args.n_envs} x {args.n_steps} | cores {cores}",
@@ -188,7 +201,9 @@ def main():
               f"foci found={row['foci_found']:.2f} (stoch {row['foci_found_stoch']:.2f})  "
               f"fire age={row['fire_age']:.0f}  oldest fire={row['oldest_fire']:.0f}  "
               f"forgotten={row['forgotten']:.2f}  dwell={row['dwell_frac']:.2f}  reversals={row['rev_frac']:.2f}  "
-              f"hover={row['hover_frac']:.2f}  seen={row['seen_frac']:.2f}", flush=True)
+              f"hover={row['hover_frac']:.2f}  seen={row['seen_frac']:.2f}"
+              + (f"  altitude low/med/high={row['alt_low']:.2f}/{row['alt_med']:.2f}/{row['alt_high']:.2f}  "
+                 f"damage={row['damage']:.2f}  lost={row['lost']:.2f}" if args.altitude else ""), flush=True)
     if args.steps > 0:
         model.save(os.path.join(args.out, "model"))
     train_min = round((time.time() - t0) / 60, 1)
@@ -209,14 +224,17 @@ def main():
              f"Fire age = mean steps since the burning cells were last seen (lower is better). Revisit gap = steps "
              f"between two looks at the same burning cell. Oldest fire = age of the most forgotten separate fire on "
              f"the drone's map. Forgotten = share of the drone's fire map not seen for more than 30 steps. Dwell = share of steps re-watching fire seen <= 5 steps "
-             f"ago. Reversals = share of moves that undo the previous move.", ""]
+             f"ago. Reversals = share of moves that undo the previous move."
+             + (" Low / Medium / High = share of steps at each altitude (baselines stay at medium). Damage = heat "
+                "damage taken (1 = a whole drone). Lost = share of missions in which the drone was lost; its map "
+                "then just gets older until the end of the mission." if args.altitude else ""), ""]
     for split, res in final.items():
         lines += [f"### {split}", "",
-                  "| Policy | " + " | ".join(HEADERS[k] for k in METRICS) + " |",
-                  "| --- " * (len(METRICS) + 1) + "|"]
+                  "| Policy | " + " | ".join(HEADERS[k] for k in metrics) + " |",
+                  "| --- " * (len(metrics) + 1) + "|"]
         for name, r in res.items():
             lines.append(f"| {name} | " + " | ".join(f"{np.mean(r[k]):.3f} +- {ci(r[k]):.3f}" if k in FRACTION
-                         else f"{np.mean(r[k]):.0f} +- {ci(r[k]):.0f}" for k in METRICS) + " |")
+                         else f"{np.mean(r[k]):.0f} +- {ci(r[k]):.0f}" for k in metrics) + " |")
         lines += ["", "Paired IoU difference (PPO - baseline, same missions; positive = PPO better):", "",
                   "| Policy | vs random | vs lawnmower | vs greedy |", "| --- | --- | --- | --- |"]
         for name in ("ppo", "ppo_stoch"):
